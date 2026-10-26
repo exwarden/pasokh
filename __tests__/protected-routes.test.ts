@@ -54,6 +54,7 @@ const PUBLIC = [
   "cron/attach-next-reel/route.ts",
   "cron/refresh-tokens/route.ts",
   "cron/snapshot-followers/route.ts",
+  "cron/cleanup/route.ts",
   "instagram/callback/route.ts",
 ];
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -101,7 +102,7 @@ describe("API routes without a session", () => {
 describe("public routes with their own check", () => {
   it("cron endpoints reject a missing or wrong bearer secret", async () => {
     vi.stubEnv("CRON_SECRET", "a-long-cron-secret-for-tests");
-    for (const route of ["attach-next-reel", "refresh-tokens", "snapshot-followers"]) {
+    for (const route of ["attach-next-reel", "refresh-tokens", "snapshot-followers", "cleanup"]) {
       const mod = await import(/* @vite-ignore */ path.join(API_DIR, `cron/${route}/route.ts`));
       const attempts: Record<string, string>[] = [{}, { authorization: "Bearer wrong" }, { authorization: "Bearer undefined" }];
       for (const headers of attempts) {
