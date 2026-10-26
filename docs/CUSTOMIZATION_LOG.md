@@ -73,3 +73,24 @@ Approved by the owner with these deviations recorded:
   real Meta connection to verify); hiding manager-only buttons from MEMBER in the UI (Phase 4).
 
 Working rule added to the project `CLAUDE.md`: never print raw `docker compose config` or environment output; always filter secrets.
+
+## Phase 2b: follow-ups from the supplementary review (2026-10-27)
+
+Branch `fix/phase2-security` (both it and `chore/phase0-setup` pushed to `exwarden/pasokh`; no tag).
+
+- S1 `lib/automation/sender-guard.ts`: per sender and account, `AUTO_REPLIES_PER_SENDER_PER_HOUR` (20) and
+  `LOOP_MESSAGES_PER_MINUTE` (10 in 60 s pauses automatic replies for an hour, one event). Echoes: both webhook parsers
+  drop them and `processMessage` now refuses `senderId === instagramAccountId` too.
+- S6 `lib/ai/assistant.ts`: `finalAttempt` (from BullMQ `attemptsMade`/`opts.attempts`) turns a busy provider into the handoff
+  message; not sent, and an event recorded, when the 24 h window is closed.
+- S4 `lib/users/login-throttle.ts`: 300 ms deadline; sign-in and setup refuse with their own message when counters are unreadable.
+- S2/S3 `lib/utils/rate-limiter.ts`: sliding-window sorted set, cap 600 (`PRIVATE_REPLIES_PER_HOUR`), new key `rate:dm:z:*`.
+  Tested on a real Redis (`TEST_REDIS_URL`).
+- S5 `lib/ops/events.ts`: one event per kind per `EVENT_COALESCE_MINUTES` (10) with `payload.repeats`. Worker failure messages no
+  longer contain the job id (it is in the payload).
+- CI: `docker-publish.yml` calls `ci.yml` (now `workflow_call`, with a Redis service) and scans each image with a digest-pinned
+  Trivy before tagging; accepted nodemailer advisories are in `.trivyignore`.
+- Not done by instruction: Graph token to Authorization header (Phase 3); hiding manager-only buttons from MEMBER (Phase 4).
+
+Upstream files touched in 2b: `lib/queue/dm-worker.ts` (two call sites and the failure recorder), `lib/utils/rate-limiter.ts`,
+`lib/users/{login-throttle,accounts}.ts`, `lib/auth.ts`, `app/login/page.tsx`, `app/setup/page.tsx`, `.github/workflows/*`.
