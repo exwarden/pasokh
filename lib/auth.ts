@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser, getPrimaryWorkspace } from "@/lib/workspace";
 import { isEmailAllowedToSignIn } from "@/lib/env";
 import { checkCredentials } from "@/lib/users/accounts";
+import { clientIpFromHeaders } from "@/lib/net/client-ip";
 
 type AdapterPrismaClient = Parameters<typeof PrismaAdapter>[0];
 
@@ -35,8 +36,7 @@ class ThrottledSignin extends CredentialsSignin {
 }
 
 function clientIp(request: Request): string | null {
-  const forwarded = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for");
-  return forwarded?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
+  return clientIpFromHeaders(request.headers);
 }
 
 const emailProviders = smtpServer

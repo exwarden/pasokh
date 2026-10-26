@@ -15,12 +15,38 @@ const MAX_MEMORY = 64 * 1024 * 1024;
 export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 256;
 
-function derive(password: string, salt: Buffer, n: number, r: number, p: number, keyLength: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    scrypt(password.normalize("NFKC"), salt, keyLength, { N: n, r, p, maxmem: MAX_MEMORY }, (error, key) =>
-      error ? reject(error) : resolve(key),
-    );
-  });
+// Each derivation holds ~32 MiB while it runs, and sign-in is reachable by
+// anyone. A burst of attempts must wait its turn instead of exhausting a small
+// server's memory.
+const MAX_CONCURRENT_DERIVATIONS = 4;
+let running = 0;
+const waiting: Array<() => void> = [];
+
+async function acquire(): Promise<void> {
+  if (running < MAX_CONCURRENT_DERIVATIONS) {
+    running++;
+    return;
+  }
+  await new Promise<void>((resolve) => waiting.push(resolve));
+}
+
+function release(): void {
+  const next = waiting.shift();
+  if (next) next(); // the slot passes straight to the next waiter
+  else running--;
+}
+
+async function derive(password: string, salt: Buffer, n: number, r: number, p: number, keyLength: number): Promise<Buffer> {
+  await acquire();
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(password.normalize("NFKC"), salt, keyLength, { N: n, r, p, maxmem: MAX_MEMORY }, (error, key) =>
+        error ? reject(error) : resolve(key),
+      );
+    });
+  } finally {
+    release();
+  }
 }
 
 /** Stored as `scrypt$N$r$p$salt$hash` (base64) so parameters can change later. */

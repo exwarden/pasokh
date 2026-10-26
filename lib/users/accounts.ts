@@ -140,7 +140,7 @@ export async function checkCredentials(rawEmail: string, password: string, ip: s
     await recordLoginFailure(email, ip);
     return { ok: false, reason: "invalid" };
   }
-  await clearLoginFailures(email);
+  await clearLoginFailures(email, ip);
   return { ok: true, user: { id: user.id, email: user.email ?? email, name: user.name } };
 }
 

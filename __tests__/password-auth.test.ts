@@ -52,6 +52,12 @@ describe("password hashing", () => {
     expect(await verifyPassword("correct horsf", stored)).toBe(false);
   });
 
+  it("keeps working when far more hashes are requested at once than may run together", async () => {
+    const stored = await hashPassword("burst password");
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => verifyPassword(i % 2 ? "burst password" : "wrong", stored)));
+    expect(results).toEqual(Array.from({ length: 12 }, (_, i) => i % 2 === 1));
+  });
+
   it("salts every hash, so equal passwords do not produce equal hashes", async () => {
     expect(await hashPassword("same")).not.toBe(await hashPassword("same"));
   });
@@ -105,9 +111,25 @@ describe("credential checks", { timeout: 30_000 }, () => {
     expect(await checkCredentials("magic@shop.ir", "", null)).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("locks an email after 5 failures, even with the right password, until the window passes", async () => {
-    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", `10.0.0.${i}`);
-    expect(await checkCredentials("owner@shop.ir", "good password", "10.0.0.99")).toEqual({ ok: false, reason: "throttled" });
+  it("locks an email after 5 failures from one place, even with the right password, until the window passes", async () => {
+    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", "10.0.0.1");
+    expect(await checkCredentials("owner@shop.ir", "good password", "10.0.0.1")).toEqual({ ok: false, reason: "throttled" });
+  });
+
+  it("an attacker's failures from one address cannot lock the real owner out from another", async () => {
+    for (let i = 0; i < 12; i++) await checkCredentials("owner@shop.ir", "wrong", "6.6.6.6");
+    expect(await checkCredentials("owner@shop.ir", "good password", "6.6.6.6")).toEqual({ ok: false, reason: "throttled" });
+    expect((await checkCredentials("owner@shop.ir", "good password", "203.0.113.7")).ok).toBe(true);
+  });
+
+  it("guessing spread over many addresses still stops at the per-email ceiling", async () => {
+    for (let i = 0; i < 50; i++) await checkCredentials("owner@shop.ir", "wrong", `198.51.100.${i}`);
+    expect(await checkCredentials("owner@shop.ir", "good password", "203.0.113.7")).toEqual({ ok: false, reason: "throttled" });
+  });
+
+  it("with no trusted address the email alone is locked after 5 failures, as before", async () => {
+    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", null);
+    expect(await checkCredentials("owner@shop.ir", "good password", null)).toEqual({ ok: false, reason: "throttled" });
   });
 
   it("locks an address that sprays many accounts", async () => {
