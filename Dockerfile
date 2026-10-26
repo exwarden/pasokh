@@ -44,7 +44,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/.next ./.next
+COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build /app/app/generated ./app/generated
 COPY --from=build /app/public ./public
 COPY --from=build /app/lib ./lib
@@ -56,7 +56,13 @@ COPY --from=build /app/next.config.ts ./next.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/package.json ./package.json
 
-RUN chmod +x scripts/docker-entrypoint.sh scripts/cron.sh && mkdir -p /app/data/media
+RUN chmod +x scripts/docker-entrypoint.sh scripts/cron.sh  && mkdir -p /app/data/media  && chown -R node:node /app/data
+
+# Not root: a flaw in the app or a dependency should not own the container. The
+# source tree stays root-owned and read-only to this user; only the Next.js
+# cache (.next) and the upload volume (/app/data) are writable. A volume created
+# by an older, root-run image keeps its owner: chown it once (docs/DEPLOYMENT.fa.md).
+USER node
 
 EXPOSE 3000
 # Resolves the public URL (quick tunnel) before starting the role's command.
