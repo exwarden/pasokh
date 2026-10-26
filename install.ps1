@@ -1,6 +1,6 @@
 # Pasokh installer for Windows (Docker Desktop).
 #
-#   irm https://raw.githubusercontent.com/ArminShirzad/pasokh/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/exwarden/pasokh/main/install.ps1 | iex
 #
 # Safe to run again: an existing installation keeps its .env and is updated.
 
@@ -71,6 +71,7 @@ if (Test-Path .env) {
         "ENCRYPTION_KEY=$(New-Secret 32)",
         "POSTGRES_PASSWORD=$(New-Secret 16)",
         "SETUP_TOKEN=$(New-Secret 16)",
+        "PASOKH_IMAGE=$env:PASOKH_IMAGE",
         "",
         "COMPOSE_PROFILES=$Profiles",
         "PASOKH_TUNNEL=$Tunnel",

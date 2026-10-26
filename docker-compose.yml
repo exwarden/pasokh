@@ -12,14 +12,17 @@
 #   cloudflare  Cloudflare named tunnel (stable URL, no open ports).
 #   (none)      Local only: http://localhost:3000. Instagram cannot reach it.
 #
-# Update:  docker compose pull && docker compose up -d
+# Update:  set the new PASOKH_IMAGE digest in .env, then docker compose pull && docker compose up -d
 
 name: pasokh
 
 x-app: &app
-  image: ${PASOKH_IMAGE:-ghcr.io/arminshirzad/pasokh:latest}
-  # Used only when the image cannot be pulled and you run from a source
-  # checkout (`docker compose build`).
+  # Required: pin the exact build, e.g. ghcr.io/exwarden/pasokh@sha256:<digest>
+  # (docs/DEPLOYMENT.fa.md). There is deliberately no default: a floating tag
+  # would run whatever was published last. For a local build use
+  # PASOKH_IMAGE=pasokh:local and `docker compose build migrate`.
+  image: ${PASOKH_IMAGE:?set PASOKH_IMAGE in .env to a pinned image, see docs/DEPLOYMENT.fa.md}
+  # Used when building from a source checkout (`docker compose build`).
   build:
     context: .
   env_file: .env
@@ -34,7 +37,7 @@ x-app: &app
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
     environment:
       POSTGRES_DB: pasokh
       POSTGRES_USER: pasokh
@@ -49,7 +52,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:d9436322172a5b482c187bf1f363d3c4fea086fcca6b9c8a94de8f0f39ed3193
     # Append-only: queued DMs and rate-limit counters survive a restart.
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -97,20 +100,20 @@ services:
       - web
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:latest@sha256:c6c7ae1d5dfdcb094ad344ed68ccffc26635c9c6be80965664c33baf064b0515
     # The metrics port serves /quicktunnel, which the app reads its URL from.
     command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 --url http://web:3000
     profiles: ["quick"]
     restart: unless-stopped
 
   cloudflared-named:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:latest@sha256:c6c7ae1d5dfdcb094ad344ed68ccffc26635c9c6be80965664c33baf064b0515
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
     profiles: ["cloudflare"]
     restart: unless-stopped
 
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
     ports:
       - "80:80"
       - "443:443"

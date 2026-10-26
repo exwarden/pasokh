@@ -22,3 +22,38 @@
 بعد از ساخت مالک، `/setup` برای همیشه بسته است؛ نگه‌داشتن `SETUP_TOKEN` در `.env` بی‌خطر است، ولی می‌توانید حذفش کنید.
 
 اگر `SETUP_TOKEN` اشتباه وارد شود، شمارندهٔ مشترک پنج بار خطا را در ۱۵ دقیقه می‌پذیرد و بعد قفل می‌شود.
+
+## ۲. ایمیج: ساخت از فورک خودمان
+
+ایمیج فقط از `exwarden/pasokh` ساخته می‌شود (workflow «Publish image»)، نه از ایمیج بالادستی.
+
+- روی push معمولی چیزی منتشر نمی‌شود. انتشار با تگ نسخه است:
+  ```bash
+  git tag v0.2.0-mr.1 && git push origin v0.2.0-mr.1
+  ```
+- وقتی workflow تمام شد، در خلاصهٔ اجرا (Run summary → «Image digest») یک خط مثل این می‌آید:
+  `PASOKH_IMAGE=ghcr.io/exwarden/pasokh@sha256:...`
+- همین مقدار را در `.env` سرور بگذارید. `PASOKH_IMAGE` الزامی است و پیش‌فرض ندارد؛ تگ شناور (`:latest`، `:main`) استفاده نمی‌کنیم.
+- بستهٔ ghcr را بعد از اولین انتشار private نگه دارید و برای VPS یک توکن فقط‌خواندنی (`read:packages`) بسازید: `docker login ghcr.io`.
+- بروزرسانی: digest جدید را در `.env` بگذارید و `docker compose pull && docker compose up -d` بزنید.
+
+سرویس‌های جانبی (`postgres`, `redis`, `caddy`, `cloudflared`) و ایمیج پایهٔ `node` در `docker-compose.yml` و `Dockerfile` با digest ثابت شده‌اند. برای ارتقای آن‌ها digest جدید را عمداً جایگزین کنید:
+```bash
+docker buildx imagetools inspect caddy:2 --format '{{.Manifest.Digest}}'
+```
+
+Actionهای GitHub هم با SHA کامل ثابت شده‌اند (کنار هر خط نسخه‌ی اصلی در کامنت آمده است).
+
+## ۳. استقرار روی VPS (بدون installer)
+
+```bash
+git clone https://github.com/exwarden/pasokh.git && cd pasokh
+git checkout <تگ منتشرشده>
+cp .env.example .env     # سپس رمزها را بسازید: openssl rand -hex 32
+```
+
+در `.env` مقدار این‌ها را بگذارید: `NEXTAUTH_SECRET`، `CRON_SECRET`، `ENCRYPTION_KEY`، `POSTGRES_PASSWORD`، `SETUP_TOKEN`، `PASOKH_IMAGE`. بعد مراحل بخش ۱ (ساخت مالک روی 127.0.0.1)، سپس انتشار دامنه.
+
+`curl | bash` و تونل سریع کلودفلر استفاده نمی‌شوند. اسکریپت‌های `install.sh` و `install.ps1` فقط برای سازگاری با بالادستی نگه داشته شده‌اند.
+
+**`ENCRYPTION_KEY` را هرگز تغییر ندهید و از `.env` یک نسخهٔ پشتیبان جدا از سرور نگه دارید.** بدون آن توکن‌های ذخیره‌شده خوانده نمی‌شوند.

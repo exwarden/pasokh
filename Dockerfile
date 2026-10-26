@@ -11,8 +11,10 @@
 # is what breaks the worker (MODULE_NOT_FOUND on @/lib imports).
 #
 # Node 24: Node 20 reached end of life in April 2026.
+# The base image is pinned by digest; bump it on purpose (docs/DEPLOYMENT.fa.md).
+# The base image is pinned by digest; bump it on purpose (docs/DEPLOYMENT.fa.md).
 
-FROM node:24-slim AS build
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 # Prisma detects the OpenSSL version to pick its schema engine; without it, it
@@ -28,7 +30,7 @@ COPY . .
 # `npm run build` = `prisma generate && next build`.
 RUN npm run build
 
-FROM node:24-slim AS runner
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
