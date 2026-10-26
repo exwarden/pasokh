@@ -103,7 +103,8 @@ describe("public routes with their own check", () => {
     vi.stubEnv("CRON_SECRET", "a-long-cron-secret-for-tests");
     for (const route of ["attach-next-reel", "refresh-tokens", "snapshot-followers"]) {
       const mod = await import(/* @vite-ignore */ path.join(API_DIR, `cron/${route}/route.ts`));
-      for (const headers of [{}, { authorization: "Bearer wrong" }, { authorization: "Bearer undefined" }]) {
+      const attempts: Record<string, string>[] = [{}, { authorization: "Bearer wrong" }, { authorization: "Bearer undefined" }];
+      for (const headers of attempts) {
         const response = await mod.GET(new Request("http://localhost/api/cron/x", { headers }) as never);
         expect(response.status, `${route} with ${JSON.stringify(headers)}`).toBe(401);
       }
