@@ -118,7 +118,8 @@ model WorkspaceInvitation {
   workspaceId     String
   email           String
   role            WorkspaceRole             @default(MEMBER)
-  token           String                    @unique
+  /// SHA-256 of the invitation token; the token itself is shown once, on creation.
+  tokenHash       String                    @unique
   status          WorkspaceInvitationStatus @default(PENDING)
   invitedByUserId String?
   expiresAt       DateTime

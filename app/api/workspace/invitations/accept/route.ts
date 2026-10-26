@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
-import { normalizeInvitationEmail } from "@/lib/workspace-invitations";
+import { hashInvitationToken, normalizeInvitationEmail } from "@/lib/workspace-invitations";
 
 export async function POST(request: NextRequest) {
   const session = await auth();
@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
   }
 
   const invitation = await prisma.workspaceInvitation.findUnique({
-    where: { token },
+    where: { tokenHash: hashInvitationToken(token) },
     include: { workspace: { select: { name: true } } },
   });
   if (!invitation || invitation.status !== "PENDING") {

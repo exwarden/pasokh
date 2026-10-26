@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser } from "@/lib/workspace";
+import { hashInvitationToken } from "@/lib/workspace-invitations";
 import { hashPassword, passwordProblem, verifyPassword } from "./password";
 import { clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
 
@@ -93,7 +94,7 @@ export async function createInvitedUser(input: {
   password: string;
   confirm: string;
 }): Promise<{ userId: string; email: string }> {
-  const invitation = await prisma.workspaceInvitation.findUnique({ where: { token: input.token } });
+  const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hashInvitationToken(input.token) } });
   if (!invitation || invitation.status !== "PENDING" || invitation.expiresAt <= new Date()) {
     throw new AccountError("This invitation is no longer valid.");
   }

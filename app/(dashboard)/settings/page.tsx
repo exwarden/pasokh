@@ -44,9 +44,10 @@ interface WorkspaceMembersData {
     id: string;
     email: string;
     role: "OWNER" | "ADMIN" | "MEMBER";
-    inviteUrl: string;
     expiresAt: string;
   }>;
+  /** Present only in the response that created the invitation. */
+  newInvite?: { email: string; inviteUrl: string };
 }
 
 export default function SettingsPage() {
@@ -55,6 +56,7 @@ export default function SettingsPage() {
   const [membersData, setMembersData] = useState<WorkspaceMembersData | null>(
     null
   );
+  const [newInvite, setNewInvite] = useState<{ email: string; inviteUrl: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -105,6 +107,7 @@ export default function SettingsPage() {
     const payload = await res.json();
     if (payload.success) {
       setMembersData(payload.data);
+      setNewInvite(payload.data.newInvite ?? null);
       setInviteEmail("");
     } else {
       setMemberError(payload.error ?? t("Could not invite member"));
@@ -267,19 +270,10 @@ export default function SettingsPage() {
                       {invitation.email}
                     </p>
                     <p className="truncate text-xs text-muted">
-                      {label(invitation.role)} · {invitation.inviteUrl}
+                      {label(invitation.role)}
                     </p>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void navigator.clipboard?.writeText(invitation.inviteUrl)
-                      }
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-border-hover hover:text-foreground"
-                    >
-                      {t("Copy")}
-                    </button>
                     <button
                       type="button"
                       onClick={() => removeInvitation(invitation.id)}
@@ -294,6 +288,22 @@ export default function SettingsPage() {
             </div>
           </div>
         ) : null}
+
+        {newInvite && (
+          <div className="mt-6 rounded border border-accent/30 bg-surface/70 p-3">
+            <p className="text-xs text-muted">
+              {t("Send this link to {email}. It is shown only once.", { email: newInvite.email })}
+            </p>
+            <p dir="ltr" className="mt-2 break-all text-xs text-foreground">{newInvite.inviteUrl}</p>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(newInvite.inviteUrl)}
+              className="mt-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-border-hover hover:text-foreground"
+            >
+              {t("Copy")}
+            </button>
+          </div>
+        )}
 
         {canManageMembers && (
           <form
