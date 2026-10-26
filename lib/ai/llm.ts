@@ -4,6 +4,8 @@
  * so no SDK has to keep up with either.
  */
 
+import { assertPublicHttpsUrl } from "@/lib/net/safe-url";
+
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 export type LlmConfig = { provider: "ANTHROPIC" | "OPENAI"; model: string; apiKey: string; baseUrl?: string | null };
 
@@ -25,18 +27,29 @@ export class LlmError extends Error {
 }
 
 async function post(url: string, headers: Record<string, string>, body: unknown): Promise<unknown> {
+  // The address of an OpenAI-compatible gateway is typed in by an admin, and
+  // the server sends the API key to it: it must be a public https host, never
+  // something inside the deployment (Redis, Postgres, the cloud metadata API).
+  try {
+    await assertPublicHttpsUrl(url);
+  } catch (error) {
+    throw new LlmError(error instanceof Error ? error.message : "The AI address is not allowed.");
+  }
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
+      // A redirect could lead somewhere the check above never saw.
+      redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (error) {
     // Nothing came back, so nothing was produced: worth another try.
     throw new LlmRateLimitError(`AI request did not complete: ${error instanceof Error ? error.message : error}`);
   }
+  if (response.status >= 300 && response.status < 400) throw new LlmError(`AI provider redirected (HTTP ${response.status}); use its final address`);
   const text = await response.text();
   if (response.status === 429 || response.status === 529 || response.status >= 500) {
     throw new LlmRateLimitError(`AI provider busy (HTTP ${response.status})`);

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Names resolve to a public address, so no test needs the network.
+vi.mock("node:dns/promises", () => ({ lookup: async () => [{ address: "93.184.216.34", family: 4 }] }));
 import { complete, LlmError, LlmRateLimitError } from "../lib/ai/llm";
 import { cleanAnswer, systemPrompt } from "../lib/ai/prompt";
 

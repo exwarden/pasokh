@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { decryptToken } from "@/lib/meta/oauth";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { canManageWorkspace, getCurrentWorkspaceContext } from "@/lib/workspace-access";
 import { complete, LlmError, LlmRateLimitError } from "@/lib/ai/llm";
 import { cleanAnswer, systemPrompt } from "@/lib/ai/prompt";
 
@@ -14,6 +14,8 @@ const schema = z.object({ instagramAccountId: z.string().min(1), question: z.str
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Every question is a paid model call and can reveal what the gateway answers.
+  if (!canManageWorkspace(context.role)) return NextResponse.json({ error: "Only owners and admins can change this" }, { status: 403 });
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
   const assistant = await prisma.aiAssistant.findFirst({
