@@ -124,6 +124,7 @@
   "Conversations": "گفتگوها",
   "Copied!": "کپی شد!",
   "Copy": "کپی",
+  "Enter a full web address starting with https:// or http://.": "آدرس کامل وب را با https:// یا http:// وارد کنید.",
   "The address could not be resolved.": "آدرس پیدا نشد (DNS).",
   "The address points at a private network.": "آدرس به شبکهٔ داخلی اشاره می‌کند و پذیرفته نمی‌شود.",
   "The address must not contain a username or password.": "آدرس نباید نام کاربری یا رمز داشته باشد.",
