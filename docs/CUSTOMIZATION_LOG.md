@@ -29,3 +29,9 @@ Tracks every change made in the `exwarden/pasokh` fork relative to upstream
   Prisma generate, migrate, tests, dev server and worker all work regardless.
 - Web (`next dev`, port 3000) and worker boot; `/setup` renders `lang=fa dir=rtl`.
   Owner account not created yet.
+
+## Phase 1: code and security review (2026-10-26)
+
+- Read-only audit; no application code changed. Findings in `docs/PHASE1_FINDINGS.md` (23 items: 5 high, 10 medium, 8 low).
+- Upstream files touched: none.
+- Not covered: `lib/queue/dm-worker.ts` internals, CI workflows, form/command/sequence engines, dynamic testing.
