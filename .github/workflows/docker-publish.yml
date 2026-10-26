@@ -125,7 +125,10 @@ jobs:
 
       # Before any tag exists: a failing scan leaves only untagged layers behind.
       # Fails on fixable HIGH or CRITICAL findings; the accepted ones are in
-      # .trivyignore, each with the reason. The scanner image is pinned by digest.
+      # .trivyignore, each with the reason. The npm CLI bundled in the base image
+      # (usr/local/lib/node_modules/npm) is skipped: only `npx prisma migrate deploy`
+      # runs it, and the base image is pinned and bumped on purpose. The scanner
+      # image is pinned by digest.
       - name: Scan each image (fail on fixable HIGH or CRITICAL)
         env:
           TRIVY_USERNAME: ${{ github.actor }}
@@ -133,7 +136,13 @@ jobs:
         run: |
           for file in /tmp/digests/*; do
             digest="sha256:$(basename "$file")"
-            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD               -v "$GITHUB_WORKSPACE/.trivyignore:/.trivyignore:ro"               aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c               image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed               --ignorefile /.trivyignore --exit-code 1 --no-progress               "${{ env.IMAGE }}@${digest}"
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+              -v "$GITHUB_WORKSPACE/.trivyignore:/.trivyignore:ro" \
+              aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+              image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile /.trivyignore --skip-dirs usr/local/lib/node_modules/npm \
+              --exit-code 1 --no-progress \
+              "${{ env.IMAGE }}@${digest}"
           done
 
       - name: Create multi-arch manifest
