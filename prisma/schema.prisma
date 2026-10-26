@@ -787,7 +787,8 @@ model AiReply {
   triggerId   String
   question    String
   answer      String?
-  /// PENDING | SENT | FAILED | UNCONFIRMED
+  /// PENDING | SENT | HANDOFF (the fixed "a person will answer" message was sent
+  /// instead of the model's answer) | FAILED | UNCONFIRMED
   status      String   @default("PENDING")
   error       String?
   createdAt   DateTime @default(now())

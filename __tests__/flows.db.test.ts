@@ -69,6 +69,7 @@ vi.mock("bullmq", () => ({
 import { ensureLab, labState, runLabAction } from "../lib/simulator/lab";
 import { saveIceBreakers } from "../lib/ice-breakers/service";
 import { encryptToken } from "../lib/meta/oauth";
+import { handoffText } from "../lib/ai/assistant";
 import { createSmsCampaign, previewSmsCampaign, processSmsBatch, recipientsFor } from "../lib/sms/campaigns";
 import { TEMPLATE_KEYS, applyTemplate } from "../lib/templates/catalog";
 import { commandProblems, commandInputSchema, referencedCommandIds } from "../lib/commands/schema";
@@ -507,7 +508,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
 
   it("shows the model the earlier exchange, so a follow-up question has something to refer to", async () => {
     await withAssistant();
-    stubModel("۱۵۰ هزار تومان.", "بله، دانشجویی ۱۰۰ هزار.");
+    stubModel("۱۵۰ هزار تومان.", "بله، دانشجویی هم همین است.");
     await act({ action: "dm", text: "بلیت چنده؟" });
     await act({ action: "dm", text: "دانشجویی هم داره؟" });
     expect(model.calls[1].messages).toEqual([
@@ -537,6 +538,63 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     state.jobs.push({ ...job }); // BullMQ retries the failed job
     await drain();
     expect(await texts()).toEqual(["حالا جواب"]);
+  });
+
+  describe("AI safeguards", () => {
+    const events = (message: string) => state.db.operationalEvent.findMany({ where: { message } });
+
+    it("sends the fixed handoff message, and records an event, when the model cannot be used", async () => {
+      await withAssistant();
+      stubModel(401);
+      await act({ action: "dm", text: "بلیت چنده؟" });
+      expect(await texts()).toEqual([handoffText()]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "HANDOFF", error: expect.stringContaining("model error") });
+      expect(await events("The AI assistant could not answer")).toHaveLength(1);
+    });
+
+    it("holds back an answer with a price the knowledge base does not contain", async () => {
+      await withAssistant();
+      stubModel("بلیت ۲۰۰ هزار تومان است.");
+      await act({ action: "dm", text: "بلیت چنده؟" });
+      expect(await texts()).toEqual([handoffText()]);
+      const [held] = await events("The AI assistant's answer was held back");
+      expect(held.payload).toMatchObject({ unsupported: expect.arrayContaining(["200"]), heldBack: "بلیت ۲۰۰ هزار تومان است." });
+    });
+
+    it("holds back a link the owner never gave it", async () => {
+      await withAssistant();
+      stubModel("از اینجا بخرید: https://evil.example/pay");
+      await act({ action: "dm", text: "کجا بخرم؟" });
+      expect(await texts()).toEqual([handoffText()]);
+    });
+
+    it("sends a figure that the customer themselves wrote, so quoting their budget back is fine", async () => {
+      await withAssistant();
+      stubModel("برای بودجه ۵۰۰ میلیون که فرمودید، مشاور تماس می‌گیرد.");
+      await act({ action: "dm", text: "بودجه‌ام ۵۰۰ میلیون است" });
+      expect(await texts()).toEqual(["برای بودجه ۵۰۰ میلیون که فرمودید، مشاور تماس می‌گیرد."]);
+    });
+
+    it("counts failed and handed-off attempts toward the daily limit, so errors cannot be used to run up cost", async () => {
+      await withAssistant(2);
+      stubModel(401, 401, "نباید پرسیده شود");
+      for (const text of ["الف", "ب", "پ"]) await act({ action: "dm", text });
+      expect(model.calls).toHaveLength(2);
+      expect(await texts()).toEqual([handoffText(), handoffText()]);
+    });
+
+    it("stops the whole workspace at its daily total, and says so once", async () => {
+      await withAssistant(50);
+      process.env.AI_MAX_REPLIES_PER_DAY = "2";
+      try {
+        stubModel("۱", "۲", "۳", "۴");
+        for (const text of ["الف", "ب", "پ", "ت"]) await act({ action: "dm", text });
+        expect(await texts()).toEqual(["۱", "۲"]);
+        expect(await events("The AI assistant reached its daily limit")).toHaveLength(1);
+      } finally {
+        delete process.env.AI_MAX_REPLIES_PER_DAY;
+      }
+    });
   });
 
   it("stops answering one person at the daily limit", async () => {
