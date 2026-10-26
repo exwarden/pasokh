@@ -407,6 +407,13 @@ describe("parseMessageEvents", () => {
     expect(parseMessageEvents(payload)).toHaveLength(0);
   });
 
+  it("should ignore a message the account itself is the sender of, even without the echo flag", () => {
+    const payload = messagingPayload([
+      { sender: { id: "ig_456" }, recipient: { id: "user_999" }, message: { mid: "mid_self", text: "hello" } },
+    ]);
+    expect(parseMessageEvents(payload)).toHaveLength(0);
+  });
+
   it("should ignore deleted and unsupported messages", () => {
     expect(
       parseMessageEvents(
