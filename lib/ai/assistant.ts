@@ -6,6 +6,7 @@ import { classifySendError, isConfirmedSendRejection, isDeliveryUnconfirmed } fr
 import { complete, LlmRateLimitError, type ChatTurn } from "./llm";
 import { unsupportedFacts } from "./guard";
 import { cleanAnswer, systemPrompt } from "./prompt";
+import { recordEvent } from "@/lib/ops/events";
 import { isInMessagingWindow } from "@/lib/contacts/touch";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -38,8 +39,8 @@ function isUniqueViolation(error: unknown) {
 export type AiOutcome = "SENT" | "HANDOFF" | "OFF" | "LIMIT" | "DUPLICATE" | "FAILED" | "UNCONFIRMED";
 
 /** Visible in the dashboard's failed-job and event lists, so a silent assistant is noticed. */
-async function recordEvent(workspaceId: string, level: "WARNING" | "ERROR", message: string, payload: Record<string, unknown>) {
-  await prisma.operationalEvent.create({ data: { workspaceId, source: "WORKER", level, message, payload: payload as never } }).catch(() => {});
+async function recordAiEvent(workspaceId: string, level: "WARNING" | "ERROR", message: string, payload: Record<string, unknown>) {
+  await recordEvent({ workspaceId, level, message, payload });
 }
 
 /**
@@ -99,7 +100,7 @@ export async function answerWithAi({
         where: { workspaceId, message: "The AI assistant reached its daily limit", createdAt: { gte: since } },
         select: { id: true },
       });
-      if (!already) await recordEvent(workspaceId, "WARNING", "The AI assistant reached its daily limit", { limit: workspaceDailyLimit() });
+      if (!already) await recordAiEvent(workspaceId, "WARNING", "The AI assistant reached its daily limit", { limit: workspaceDailyLimit() });
       return "LIMIT";
     }
     try {
@@ -149,11 +150,11 @@ export async function answerWithAi({
         throw error;
       }
       failure = `model error: ${error instanceof Error ? error.message : String(error)}`;
-      await recordEvent(workspaceId, "ERROR", "The AI assistant could not answer", { assistantId: assistant.id, igsid, reason: failure });
+      await recordAiEvent(workspaceId, "ERROR", "The AI assistant could not answer", { assistantId: assistant.id, igsid, reason: failure });
     }
     if (!failure && !modelAnswer) {
       failure = "the model returned an empty answer";
-      await recordEvent(workspaceId, "WARNING", "The AI assistant could not answer", { assistantId: assistant.id, igsid, reason: failure });
+      await recordAiEvent(workspaceId, "WARNING", "The AI assistant could not answer", { assistantId: assistant.id, igsid, reason: failure });
     }
     if (!failure) {
       // What the model may rely on: what the owner wrote and what was said in this conversation.
@@ -161,7 +162,7 @@ export async function answerWithAi({
       const unsupported = unsupportedFacts(modelAnswer, allowed);
       if (unsupported.length > 0) {
         failure = `unsupported in the answer: ${unsupported.join(", ")}`;
-        await recordEvent(workspaceId, "WARNING", "The AI assistant's answer was held back", { assistantId: assistant.id, igsid, unsupported, heldBack: modelAnswer });
+        await recordAiEvent(workspaceId, "WARNING", "The AI assistant's answer was held back", { assistantId: assistant.id, igsid, unsupported, heldBack: modelAnswer });
       }
     }
 
@@ -185,7 +186,7 @@ export async function answerWithAi({
     if (!isInMessagingWindow(contact?.lastInboundAt)) {
       const error = `${handoff} (not sent: the 24-hour messaging window is closed)`.slice(0, 500);
       await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error } });
-      await recordEvent(workspaceId, "WARNING", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: error });
+      await recordAiEvent(workspaceId, "WARNING", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: error });
       return "FAILED";
     }
   }
@@ -205,7 +206,7 @@ export async function answerWithAi({
       if (!finalAttempt) throw raw;
       // No retry is left: say so rather than leave the reply waiting for ever.
       await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error: "Instagram asked us to wait and no retry was left" } });
-      await recordEvent(workspaceId, "ERROR", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: "rate limited on the last attempt" });
+      await recordAiEvent(workspaceId, "ERROR", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: "rate limited on the last attempt" });
       return "FAILED";
     }
     const error = classifySendError(raw);

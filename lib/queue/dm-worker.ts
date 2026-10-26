@@ -68,6 +68,7 @@ import { runSequenceStep } from "@/lib/sequences/engine";
 import { handleFormMessage } from "@/lib/forms/engine";
 import { answerWithAi } from "@/lib/ai/assistant";
 import { checkSender } from "@/lib/automation/sender-guard";
+import { recordEvent } from "@/lib/ops/events";
 import { processSmsBatch } from "@/lib/sms/campaigns";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
@@ -2049,18 +2050,16 @@ async function recordWorkerFailure(
         })
       : null;
 
-    await prisma.operationalEvent.create({
-      data: {
-        workspaceId: account?.workspaceId ?? null,
-        source: "WORKER",
-        level: "ERROR",
-        message: `DM worker job ${job?.id ?? "unknown"} failed: ${error.message}`,
-        payload: {
-          jobId: job?.id ?? null,
-          attemptsMade: job?.attemptsMade ?? null,
-          instagramAccountId: instagramAccountId ?? null,
-          commentId,
-        },
+    // One row per kind of failure, not per job: the job id is in the payload.
+    await recordEvent({
+      workspaceId: account?.workspaceId ?? null,
+      level: "ERROR",
+      message: `DM worker job failed: ${error.message}`.slice(0, 300),
+      payload: {
+        jobId: job?.id ?? null,
+        attemptsMade: job?.attemptsMade ?? null,
+        instagramAccountId: instagramAccountId ?? null,
+        commentId,
       },
     });
 
@@ -2103,21 +2102,7 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   worker.on("error", (err) => {
     console.error("[DM Worker] Worker error:", err.message);
-    void prisma.operationalEvent
-      .create({
-        data: {
-          source: "WORKER",
-          level: "ERROR",
-          message: `DM worker process error: ${err.message}`,
-          payload: { name: err.name },
-        },
-      })
-      .catch((recordError) => {
-        console.error(
-          "[DM Worker] Failed to record worker process error:",
-          formatError(recordError)
-        );
-      });
+    void recordEvent({ level: "ERROR", message: `DM worker process error: ${err.message}`.slice(0, 300), payload: { name: err.name } });
   });
 
   return worker;
