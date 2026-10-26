@@ -1,4 +1,5 @@
 import { getRedisConnection } from "@/lib/queue/client";
+import { withTimeout } from "@/lib/net/with-timeout";
 
 const WINDOW_SECONDS = 60;
 /** Counted clicks per link and visitor each minute; real people do not click one link 30 times. */
@@ -15,8 +16,9 @@ export async function shouldRecordClick(slug: string, ipHash: string | null): Pr
   try {
     const redis = getRedisConnection();
     const key = `click:${slug}:${ipHash ?? "unknown"}`;
-    const results = await redis.multi().incr(key).expire(key, WINDOW_SECONDS, "NX").exec();
-    const count = Number(results?.[0]?.[1] ?? 0);
+    const results = await withTimeout(redis.multi().incr(key).expire(key, WINDOW_SECONDS, "NX").exec(), 300, null);
+    if (!results) return true; // Redis too slow or down: count the click, as before
+    const count = Number(results[0]?.[1] ?? 0);
     return count <= (ipHash ? PER_VISITOR : PER_LINK_UNKNOWN_VISITOR);
   } catch {
     return true;

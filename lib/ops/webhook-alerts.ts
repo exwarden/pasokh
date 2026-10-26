@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import { getRedisConnection } from "@/lib/queue/client";
+import { withTimeout } from "@/lib/net/with-timeout";
 
 const WINDOW_SECONDS = 10 * 60;
 
@@ -16,8 +17,9 @@ export async function noteBadWebhookSignature({ hadSignatureHeader, bodyLength }
   try {
     const redis = getRedisConnection();
     const key = "webhook_bad_signature";
-    const results = await redis.multi().incr(key).expire(key, WINDOW_SECONDS, "NX").exec();
-    const count = Number(results?.[0]?.[1] ?? 0);
+    const results = await withTimeout(redis.multi().incr(key).expire(key, WINDOW_SECONDS, "NX").exec(), 300, null);
+    if (!results) return; // Redis unavailable: say nothing rather than hold the request
+    const count = Number(results[0]?.[1] ?? 0);
     if (count !== 1) return;
     await prisma.operationalEvent.create({
       data: {

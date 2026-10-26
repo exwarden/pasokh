@@ -71,3 +71,17 @@ describe("campaign link addresses", () => {
     }
   });
 });
+
+describe("when Redis does not answer", () => {
+  it("the redirect still happens and the click is still stored, instead of waiting for ever", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/queue/client", () => ({
+      getRedisConnection: () => ({ multi: () => ({ incr() { return this; }, expire() { return this; }, exec: () => new Promise(() => {}) }) }),
+    }));
+    const { shouldRecordClick } = await import("../lib/tracking/click-limit");
+    const started = Date.now();
+    expect(await shouldRecordClick("slug", "hash")).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+    vi.doUnmock("@/lib/queue/client");
+  });
+});
