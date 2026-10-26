@@ -94,7 +94,17 @@ services:
 
   # Token refresh, follower snapshots, next-reel binding.
   cron:
-    <<: *app
+    # Not built on the shared block above, on purpose: it only calls the web
+    # container with CRON_SECRET, so it gets no database password, no
+    # ENCRYPTION_KEY and none of the other secrets from .env.
+    image: ${PASOKH_IMAGE:?set PASOKH_IMAGE in .env to a pinned image, see docs/DEPLOYMENT.fa.md}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    environment:
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (16+ characters)}
+      TZ: ${TZ:-Asia/Tehran}
     command: ["sh", "scripts/cron.sh"]
     depends_on:
       - web

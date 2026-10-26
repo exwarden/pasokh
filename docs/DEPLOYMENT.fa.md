@@ -56,4 +56,9 @@ cp .env.example .env     # سپس رمزها را بسازید: openssl rand -he
 
 `curl | bash` و تونل سریع کلودفلر استفاده نمی‌شوند. اسکریپت‌های `install.sh` و `install.ps1` فقط برای سازگاری با بالادستی نگه داشته شده‌اند.
 
+**کانتینرها با کاربر `node` (غیر root) اجرا می‌شوند.** اگر قبلاً با ایمیج قدیمی (root) volume آپلودها ساخته شده، یک‌بار مالکیتش را درست کنید:
+```bash
+docker compose run --rm --user root --entrypoint chown web -R node:node /app/data
+```
+
 **`ENCRYPTION_KEY` را هرگز تغییر ندهید و از `.env` یک نسخهٔ پشتیبان جدا از سرور نگه دارید.** بدون آن توکن‌های ذخیره‌شده خوانده نمی‌شوند.
