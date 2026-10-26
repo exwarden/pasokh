@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { enrollmentCounts, presentSequence, readSequenceInput, sequenceData } from "@/lib/sequences/api";
 
 export const runtime = "nodejs";
@@ -27,6 +27,8 @@ export async function GET(_request: NextRequest, { params }: Params) {
 export async function PUT(request: NextRequest, { params }: Params) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const { id } = await params;
   const existing = await owned(id, context.workspaceId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -51,6 +53,8 @@ export async function PUT(request: NextRequest, { params }: Params) {
 export async function DELETE(_request: NextRequest, { params }: Params) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const { id } = await params;
   if (!(await owned(id, context.workspaceId))) return NextResponse.json({ error: "Not found" }, { status: 404 });
   // Smart replies that started it stop doing so (SetNull); people part-way

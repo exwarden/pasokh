@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { checkUpload, cleanFileName, mediaUrl, newPublicId, writeMediaFile } from "@/lib/media/store";
 
 export const runtime = "nodejs";
@@ -34,6 +34,8 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
 
   let file: File | null = null;
   try {
