@@ -24,7 +24,7 @@ vi.mock("@/lib/db/client", () => ({
         new Proxy(
           {},
           {
-            get: (_m, method: string) => (..._args: unknown[]) => {
+            get: (_m, method: string) => () => {
               if (model === "workspaceMember" && method === "findFirst") {
                 return Promise.resolve({ workspaceId: "w1", role: state.role, workspace: { id: "w1" } });
               }
