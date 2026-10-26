@@ -60,3 +60,16 @@ New files (ours, merge-free): `lib/net/*`, `lib/ops/{retention,webhook-alerts}.t
 Verification: typecheck clean; lint 0 errors (1 warning in upstream `invitation-accept-card.tsx`); 737 tests green in
 three consecutive full runs with Postgres; `npm run build` passes; Docker image built and the compose stack booted
 (non-root, health, headers, cron isolation) and was then removed.
+
+### Phase 2 approval and accepted deviations (2026-10-26)
+
+Approved by the owner with these deviations recorded:
+- `/api/contacts/export` is ADMIN+ only (MEMBER may view and edit contacts, not bulk-export them).
+- F18 (adding an existing user to a workspace without their acceptance) not changed: invitation auto-accept by matching
+  email in `ensureWorkspaceForUser` is what `createInvitedUser` relies on; internal staff-only instance.
+- F23 not done: `tsx` and `prisma` are devDependencies the image needs; `ProcessedComment` kept to keep upstream merges cheap.
+- The Dockerfile `USER node` change landed in commit `3b046ea` (cron auth) instead of its own commit; history not rewritten.
+- Deferred to later phases: moving the Graph access token from query string to the Authorization header (Phase 3, needs a
+  real Meta connection to verify); hiding manager-only buttons from MEMBER in the UI (Phase 4).
+
+Working rule added to the project `CLAUDE.md`: never print raw `docker compose config` or environment output; always filter secrets.
