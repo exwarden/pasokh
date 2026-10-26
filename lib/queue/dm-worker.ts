@@ -67,6 +67,7 @@ import { ZernioApiError } from "@/lib/zernio/client";
 import { runSequenceStep } from "@/lib/sequences/engine";
 import { handleFormMessage } from "@/lib/forms/engine";
 import { answerWithAi } from "@/lib/ai/assistant";
+import { checkSender } from "@/lib/automation/sender-guard";
 import { processSmsBatch } from "@/lib/sms/campaigns";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
@@ -1586,6 +1587,18 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  */
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
+
+  // Our own messages come back as echoes. The webhook parsers drop them; this
+  // is the second lock: an account never answers itself.
+  if (senderId === instagramAccountId) return;
+
+  // Automatic replies to one sender are capped, and a sender who sends messages
+  // faster than a person can (another auto-responder) is paused for an hour.
+  const verdict = await checkSender({ instagramId: instagramAccountId, senderId, messageId });
+  if (verdict !== "allow") {
+    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${verdict}`);
+    return;
+  }
 
   await touchContact({
     instagramId: instagramAccountId,

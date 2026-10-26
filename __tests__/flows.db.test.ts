@@ -36,6 +36,24 @@ vi.mock("@/lib/queue/client", () => ({
   }),
   getRedisConnection: () => ({
     get: async (key: string) => state.redis.get(key) ?? null,
+    multi: () => {
+      const ops: Array<() => number> = [];
+      const chain = {
+        incr: (key: string) => {
+          ops.push(() => {
+            state.redis.set(key, String(Number(state.redis.get(key) ?? 0) + 1));
+            return Number(state.redis.get(key));
+          });
+          return chain;
+        },
+        expire: () => {
+          ops.push(() => 1);
+          return chain;
+        },
+        exec: async () => ops.map((op) => [null, op()]),
+      };
+      return chain;
+    },
     getdel: async (key: string) => {
       const value = state.redis.get(key) ?? null;
       state.redis.delete(key);
@@ -538,6 +556,28 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     state.jobs.push({ ...job }); // BullMQ retries the failed job
     await drain();
     expect(await texts()).toEqual(["حالا جواب"]);
+  });
+
+  describe("one sender cannot make the account talk without end", () => {
+    const keywordReply = () => keywordCommand("قیمت", [{ type: "text", text: "لیست قیمت" }]);
+
+    it("pauses automatic replies for a sender who writes faster than a person, and resumes nothing early", async () => {
+      await keywordReply();
+      for (let i = 0; i < 14; i++) await act({ action: "dm", text: "قیمت" });
+      expect((await texts()).length).toBe(10);
+      expect(await state.db.operationalEvent.count({ where: { message: "Automatic replies to a sender were paused" } })).toBe(1);
+    });
+
+    it("answers at most 20 messages from one sender in an hour", async () => {
+      await keywordReply();
+      process.env.LOOP_MESSAGES_PER_MINUTE = "1000";
+      try {
+        for (let i = 0; i < 25; i++) await act({ action: "dm", text: "قیمت" });
+        expect((await texts()).length).toBe(20);
+      } finally {
+        delete process.env.LOOP_MESSAGES_PER_MINUTE;
+      }
+    });
   });
 
   describe("AI safeguards", () => {
