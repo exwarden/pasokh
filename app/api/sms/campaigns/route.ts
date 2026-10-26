@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { canManageWorkspace, getCurrentWorkspaceContext } from "@/lib/workspace-access";
 import { campaignCounts, createSmsCampaign } from "@/lib/sms/campaigns";
+import { SmsGuardError } from "@/lib/sms/guards";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,8 @@ const schema = z.object({
   message: z.string().trim().min(1).max(1000),
   accountId: z.string().min(1).nullable().optional(),
   tag: z.string().min(1).nullable().optional(),
+  /** From POST /api/sms/campaigns/preview; works once. */
+  previewToken: z.string().min(1).max(100).optional(),
 });
 
 export async function GET() {
@@ -40,6 +43,11 @@ export async function POST(request: NextRequest) {
     const campaign = await createSmsCampaign({ workspaceId: context.workspaceId, ...rest, filter: { accountId, tag: rest.tag } });
     return NextResponse.json({ campaign }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not start the send." }, { status: 400 });
+    // Guard messages are written for the owner; anything else is not shown.
+    if (error instanceof SmsGuardError || (error instanceof Error && error.message === "Set up an SMS provider first.")) {
+      return NextResponse.json({ error: error.message }, { status: error instanceof SmsGuardError ? 409 : 400 });
+    }
+    console.error("[SMS] Could not start a send:", error);
+    return NextResponse.json({ error: "Could not start the send." }, { status: 500 });
   }
 }

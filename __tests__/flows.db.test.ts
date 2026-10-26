@@ -36,6 +36,11 @@ vi.mock("@/lib/queue/client", () => ({
   }),
   getRedisConnection: () => ({
     get: async (key: string) => state.redis.get(key) ?? null,
+    getdel: async (key: string) => {
+      const value = state.redis.get(key) ?? null;
+      state.redis.delete(key);
+      return value;
+    },
     set: async (key: string, value: string, ...args: unknown[]) => {
       if (args.includes("NX") && state.redis.has(key)) return null;
       state.redis.set(key, value);
@@ -64,7 +69,7 @@ vi.mock("bullmq", () => ({
 import { ensureLab, labState, runLabAction } from "../lib/simulator/lab";
 import { saveIceBreakers } from "../lib/ice-breakers/service";
 import { encryptToken } from "../lib/meta/oauth";
-import { createSmsCampaign, processSmsBatch } from "../lib/sms/campaigns";
+import { createSmsCampaign, previewSmsCampaign, processSmsBatch, recipientsFor } from "../lib/sms/campaigns";
 import { TEMPLATE_KEYS, applyTemplate } from "../lib/templates/catalog";
 import { commandProblems, commandInputSchema, referencedCommandIds } from "../lib/commands/schema";
 import { createDMWorker } from "../lib/queue/dm-worker";
@@ -411,6 +416,43 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     expect((await state.db.contact.findFirst({ where: { instagramAccountId: accountId } }))?.phone).toBe("09123456789");
   });
 
+  async function withConsentForm() {
+    const form = await state.db.form.create({
+      data: {
+        workspaceId: "ws",
+        instagramAccountId: accountId,
+        name: "رضایت",
+        cancelWord: "لغو",
+        completionMessage: "ممنون",
+        cancelMessage: "لغو شد",
+        questions: [
+          { id: "phone", text: "شماره‌ات؟", kind: "phone", saveTo: "phone" },
+          { id: "sms", text: "پیامک بفرستیم؟", kind: "choice", choices: ["بله", "خیر"], grantsSmsConsent: true },
+        ],
+      },
+    });
+    await state.db.command.create({
+      data: { workspaceId: "ws", instagramAccountId: accountId, name: "رضایت", keywords: ["ثبت نام"], formId: form.id, responses: [{ type: "text", text: "شروع" }] as never },
+    });
+    return form;
+  }
+
+  it("records SMS consent, with its time and source, only when the person picks the consent option", async () => {
+    const form = await withConsentForm();
+    const answer = async (title: string, index: number) => {
+      await act({ action: "dm", text: "ثبت نام" });
+      await act({ action: "dm", text: "09123456789" });
+      const ask = await lastOut();
+      await act({ action: "tap", payload: ask.quickReplies![index].payload, title, quickReply: true });
+      return state.db.contact.findFirstOrThrow({ where: { instagramAccountId: accountId } });
+    };
+    expect(await answer("خیر", 1)).toMatchObject({ phone: "09123456789", smsConsent: false, smsConsentSource: `form:${form.id}` });
+
+    const yes = await answer("بله", 0);
+    expect(yes).toMatchObject({ smsConsent: true, smsConsentSource: `form:${form.id}` });
+    expect(yes.smsConsentAt).toBeInstanceOf(Date);
+  });
+
   it("stops the form on the cancel word and answers keywords normally afterwards", async () => {
     const form = await withForm();
     await act({ action: "dm", text: "ثبت نام" });
@@ -504,12 +546,31 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     expect(await texts()).toEqual(["۱", "۲"]);
     expect(model.calls).toHaveLength(2);
   });
+  // Bulk SMS never reaches the test lab, so its contacts live on a real (Meta) connection.
+  async function smsAccount() {
+    const existing = await state.db.instagramAccount.findFirst({ where: { workspaceId: "ws", provider: "META" } });
+    return (
+      existing ??
+      (await state.db.instagramAccount.create({
+        data: { workspaceId: "ws", instagramId: "sms_ig", username: "shop", accessToken: "", provider: "META" },
+      }))
+    ).id;
+  }
   async function contactsWithPhones(phones: string[]) {
+    const instagramAccountId = await smsAccount();
     await state.db.contact.createMany({
-      data: phones.map((phone, i) => ({ instagramAccountId: accountId, igsid: `sms_${i}`, phone })),
+      data: phones.map((phone, i) => ({ instagramAccountId, igsid: `sms_${i}`, phone, smsConsent: true })),
     });
   }
+  // Sending is two steps: a preview hands back the one-time token the send needs.
+  async function startSms(args: { workspaceId: string; name: string; message: string; filter: { accountId?: string | null; tag?: string | null } }) {
+    const preview = await previewSmsCampaign({ workspaceId: args.workspaceId, message: args.message, filter: args.filter });
+    return createSmsCampaign({ ...args, previewToken: preview.token ?? undefined });
+  }
   async function smsPanel(provider = "KAVENEGAR") {
+    // The batching tests send more numbers than the default per-send limit allows.
+    process.env.SMS_MAX_RECIPIENTS = "1000";
+    process.env.SMS_MAX_RECIPIENTS_PER_DAY = "5000";
     process.env.ENCRYPTION_KEY ??= "0".repeat(64);
     await state.db.smsSettings.create({ data: { workspaceId: "ws", provider, apiKey: provider === "TEST" ? "" : encryptToken("k"), sender: "3000" } });
   }
@@ -536,7 +597,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones([...phones, "+98 912 000 0001", "۰۹۱۲۰۰۰۰۰۰۲"]); // two repeats in other forms
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "حراج", message: "حراج پاییزه", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "حراج", message: "حراج پاییزه", filter: {} });
     await drain();
     expect(sentTo.map((b) => b.length)).toEqual([100, 100, 30]);
     expect(new Set(sentTo.flat()).size).toBe(230);
@@ -548,7 +609,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 250 }, (_, i) => `0935${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar(418);
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     await drain();
     expect(sentTo).toHaveLength(1);
     expect(await smsStatuses(campaign.id)).toEqual({ FAILED: 250 });
@@ -563,7 +624,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
       calls++;
       throw new TypeError("socket hang up");
     });
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     await drain();
     await processSmsBatch(campaign.id, 5); // a stray retry
     expect(calls).toBe(1);
@@ -574,7 +635,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 150 }, (_, i) => `0901${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     state.jobs.push({ ...state.jobs[0] });
     await drain();
     await processSmsBatch(campaign.id, 0);
@@ -586,7 +647,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 150 }, (_, i) => `0902${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     state.jobs = [];
     await Promise.all([processSmsBatch(campaign.id, 0), processSmsBatch(campaign.id, 0), processSmsBatch(campaign.id, 0)]);
     await drain();
@@ -599,10 +660,81 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(["09120000001", "09120000002"]);
     await state.db.contact.updateMany({ where: { phone: "09120000002" }, data: { tags: ["مشتری"] } });
     await smsPanel("TEST");
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: { tag: "مشتری" } });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: { tag: "مشتری" } });
     await drain();
     expect((await state.db.smsMessage.findMany({ where: { campaignId: campaign.id } })).map((m) => [m.phone, m.status])).toEqual([["09120000002", "SENT"]]);
   });
+  describe("bulk SMS safeguards", () => {
+    const send = (over: Partial<Parameters<typeof startSms>[0]> = {}) =>
+      startSms({ workspaceId: "ws", name: "x", message: "پیام آزمایشی", filter: {}, ...over });
+
+    it("reaches only contacts who agreed, never the test lab's pretend people (accountId is the lab here)", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await state.db.contact.create({ data: { instagramAccountId: await smsAccount(), igsid: "no_consent", phone: "09120000002" } });
+      await state.db.contact.create({ data: { instagramAccountId: accountId, igsid: "simfan", phone: "09120000003", smsConsent: true } });
+      await smsPanel("TEST");
+      expect(await recipientsFor("ws", {})).toEqual(["09120000001"]);
+    });
+
+    it("refuses to send without a preview, and the same preview cannot be used twice", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("TEST");
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: undefined })).rejects.toThrow("Preview this send first");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام", filter: {} });
+      await createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! })).rejects.toThrow("expired or was already used");
+      expect(await state.db.smsCampaign.count()).toBe(1);
+    });
+
+    it("a double click sends once: two requests with the same token race and only one wins", async () => {
+      await contactsWithPhones(["09120000001", "09120000002"]);
+      await smsPanel("TEST");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام", filter: {} });
+      const attempt = () => createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! });
+      const results = await Promise.allSettled([attempt(), attempt(), attempt()]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(await state.db.smsCampaign.count()).toBe(1);
+    });
+
+    it("a token from one text cannot send another, and a changed audience needs a new preview", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("TEST");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام اول", filter: {} });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام دوم", filter: {}, previewToken: preview.token! })).rejects.toThrow("changed since the preview");
+      const second = await previewSmsCampaign({ workspaceId: "ws", message: "پیام اول", filter: {} });
+      await state.db.contact.create({ data: { instagramAccountId: await smsAccount(), igsid: "late", phone: "09129999999", smsConsent: true } });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام اول", filter: {}, previewToken: second.token! })).rejects.toThrow("changed since the preview");
+    });
+
+    it("refuses more numbers than one send may reach, and more than the day allows", async () => {
+      await contactsWithPhones(Array.from({ length: 6 }, (_, i) => `0912000000${i}`));
+      await smsPanel("KAVENEGAR");
+      process.env.SMS_MAX_RECIPIENTS = "5";
+      const tooMany = await previewSmsCampaign({ workspaceId: "ws", message: "الف", filter: {} });
+      expect(tooMany).toMatchObject({ token: null, problem: expect.stringContaining("Too many recipients") });
+
+      process.env.SMS_MAX_RECIPIENTS = "10";
+      process.env.SMS_MAX_RECIPIENTS_PER_DAY = "8";
+      stubKavenegar();
+      await send({ message: "ب" });
+      const overDay = await previewSmsCampaign({ workspaceId: "ws", message: "ج", filter: {} });
+      expect(overDay).toMatchObject({ token: null, problem: "The daily SMS limit would be exceeded." });
+    });
+
+    it("refuses the same message twice in 24 hours, ignoring spacing, but allows it again after that", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("KAVENEGAR");
+      stubKavenegar();
+      await send({ message: "حراج  پاییزه" });
+      expect(await previewSmsCampaign({ workspaceId: "ws", message: " حراج پاییزه ", filter: {} })).toMatchObject({
+        token: null,
+        problem: "This message was already sent in the last 24 hours.",
+      });
+      await state.db.smsCampaign.updateMany({ data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) } });
+      expect((await previewSmsCampaign({ workspaceId: "ws", message: "حراج پاییزه", filter: {} })).token).not.toBeNull();
+    });
+  });
+
   it("creates every template paused, so none answers real followers before the owner switches it on", async () => {
     for (const key of TEMPLATE_KEYS) await applyTemplate(key, { workspaceId: "ws", instagramAccountId: accountId, locale: "fa" });
     const active = await Promise.all([

@@ -240,6 +240,10 @@ export default function FormEditPage({ params }: { params: Promise<{ id: string 
                     </button>
                   )}
                   <p className="text-xs text-muted">{t("Shown as quick-reply buttons; typing the option or its number also works.")}</p>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" checked={Boolean(q.grantsSmsConsent)} onChange={(e) => updateQuestion(index, { ...q, grantsSmsConsent: e.target.checked || undefined })} />
+                    {t("The first option means they agree to receive SMS; the others decline.")}
+                  </label>
                 </div>
               )}
               {problemsAt(`questions[${index}]`).map((p, i) => (

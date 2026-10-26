@@ -12,6 +12,7 @@ const questionSchema = z.object({
   kind: z.enum(["text", "phone", "email", "number", "choice"]),
   choices: z.array(z.string().trim().min(1)).max(13).optional(),
   saveTo: z.enum(["phone", "email", "name"]).optional(),
+  grantsSmsConsent: z.boolean().optional(),
 });
 
 export const formInputSchema = z.object({
@@ -38,6 +39,7 @@ export function formProblems(input: FormInput): { path: string; message: string 
       if ((q.choices?.length ?? 0) < 2) problems.push({ path: at, message: "A choice question needs at least 2 options." });
       if (q.choices?.some((c) => codePoints(c) > 20)) problems.push({ path: at, message: "Options can be at most 20 characters, as Instagram's quick replies." });
     }
+    if (q.grantsSmsConsent && q.kind !== "choice") problems.push({ path: at, message: "Only a choice question can ask for SMS consent." });
     // Saving a free-text answer as a phone number would fill the contact with junk.
     if (q.saveTo === "phone" && q.kind !== "phone") problems.push({ path: at, message: "Only a phone question can be saved as the contact's phone." });
     if (q.saveTo === "email" && q.kind !== "email") problems.push({ path: at, message: "Only an email question can be saved as the contact's email." });
@@ -66,7 +68,7 @@ export function formData(input: FormInput) {
     name: input.name,
     instagramAccountId: input.instagramAccountId,
     isActive: input.isActive,
-    questions: input.questions.map((q) => ({ ...q, ...(q.kind === "choice" ? {} : { choices: undefined }) })) as Prisma.InputJsonValue,
+    questions: input.questions.map((q) => ({ ...q, ...(q.kind === "choice" ? {} : { choices: undefined }), ...(q.grantsSmsConsent ? {} : { grantsSmsConsent: undefined }) })) as Prisma.InputJsonValue,
     cancelWord: input.cancelWord,
     completionMessage: input.completionMessage,
     cancelMessage: input.cancelMessage,

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { canManageWorkspace, getCurrentWorkspaceContext } from "@/lib/workspace-access";
 import { cleanTags } from "@/lib/contacts/list";
 import { normalizeEmail, normalizePhone } from "@/lib/forms/answers";
 
@@ -12,6 +12,7 @@ const patchSchema = z.object({
   name: z.string().max(120).nullable().optional(),
   phone: z.string().max(40).nullable().optional(),
   email: z.string().max(200).nullable().optional(),
+  smsConsent: z.boolean().optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -23,7 +24,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const parsed = patchSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
 
-  const { tags, name, phone, email } = parsed.data;
+  const { tags, name, phone, email, smsConsent } = parsed.data;
+  // Recording consent decides who gets SMS, so it is not a member's call.
+  if (smsConsent !== undefined && smsConsent !== contact.smsConsent && !canManageWorkspace(context.role)) {
+    return NextResponse.json({ error: "Only owners and admins can change this" }, { status: 403 });
+  }
   // Stored in the same form a form answer is, so search and SMS see one format.
   const cleanPhone = phone ? normalizePhone(phone) : phone;
   if (phone && !cleanPhone) return NextResponse.json({ error: "That does not look like a phone number." }, { status: 400 });
@@ -37,6 +42,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       ...(name !== undefined ? { name: name?.trim() || null } : {}),
       ...(phone !== undefined ? { phone: cleanPhone || null } : {}),
       ...(email !== undefined ? { email: cleanEmail || null } : {}),
+      ...(smsConsent !== undefined && smsConsent !== contact.smsConsent
+        ? { smsConsent, smsConsentAt: new Date(), smsConsentSource: `manual:${context.userId}` }
+        : {}),
     },
   });
   return NextResponse.json({ contact: updated });

@@ -191,6 +191,20 @@ export async function handleFormMessage({
       .catch(() => {});
   }
 
+  if (question.grantsSmsConsent && question.kind === "choice" && question.choices?.length) {
+    // The first option is "yes"; any other option is a refusal and takes
+    // back an earlier yes.
+    const agreed = value === question.choices[0];
+    const consent = { smsConsent: agreed, smsConsentAt: new Date(), smsConsentSource: `form:${form.id}` };
+    await prisma.contact
+      .upsert({
+        where: { instagramAccountId_igsid: { instagramAccountId: form.instagramAccountId, igsid } },
+        create: { instagramAccountId: form.instagramAccountId, igsid, ...consent },
+        update: consent,
+      })
+      .catch(() => {});
+  }
+
   await sendOrUndo(
     done
       ? { type: "text", text: fill(form.completionMessage, username) }
