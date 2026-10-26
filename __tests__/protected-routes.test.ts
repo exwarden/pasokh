@@ -75,7 +75,8 @@ beforeEach(() => {
 
 const protectedRoutes = routeFiles(API_DIR).filter((f) => !PUBLIC.includes(f));
 
-describe("API routes without a session", () => {
+// The first import of a route pulls in its whole module graph; under a loaded machine that exceeded 10 s once.
+describe("API routes without a session", { timeout: 30_000 }, () => {
   it("finds the routes to check", () => {
     expect(protectedRoutes.length).toBeGreaterThan(30);
   });
