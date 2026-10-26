@@ -123,7 +123,7 @@ export async function createInvitedUser(input: {
 }
 
 export type CredentialCheck =
-  | { ok: true; user: { id: string; email: string; name: string | null } }
+  | { ok: true; user: { id: string; email: string; name: string | null; sessionVersion: number } }
   | { ok: false; reason: "throttled" | "invalid" };
 
 export async function checkCredentials(rawEmail: string, password: string, ip: string | null): Promise<CredentialCheck> {
@@ -131,7 +131,7 @@ export async function checkCredentials(rawEmail: string, password: string, ip: s
   if (await isLoginThrottled(email, ip)) return { ok: false, reason: "throttled" };
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, email: true, name: true, passwordHash: true },
+    select: { id: true, email: true, name: true, passwordHash: true, sessionVersion: true },
   });
   // Verify even when the user is missing so response time does not reveal
   // which addresses have accounts.
@@ -141,7 +141,7 @@ export async function checkCredentials(rawEmail: string, password: string, ip: s
     return { ok: false, reason: "invalid" };
   }
   await clearLoginFailures(email, ip);
-  return { ok: true, user: { id: user.id, email: user.email ?? email, name: user.name } };
+  return { ok: true, user: { id: user.id, email: user.email ?? email, name: user.name, sessionVersion: user.sessionVersion ?? 0 } };
 }
 
 /** Sets a new password; used by the CLI reset script and account settings. */
@@ -151,7 +151,7 @@ export async function setPassword(rawEmail: string, password: string): Promise<b
   const email = normalizeEmail(rawEmail);
   const result = await prisma.user.updateMany({
     where: { email },
-    data: { passwordHash: await hashPassword(password) },
+    data: { passwordHash: await hashPassword(password), sessionVersion: { increment: 1 } },
   });
   if (result.count > 0) await clearLoginFailures(email);
   return result.count > 0;

@@ -30,18 +30,20 @@ const redis = vi.hoisted(() => {
 });
 vi.mock("@/lib/queue/client", () => ({ getRedisConnection: () => redis.client }));
 
-const db = vi.hoisted(() => ({ users: new Map<string, { id: string; email: string; name: string | null; passwordHash: string | null }>() }));
+const db = vi.hoisted(() => ({ users: new Map<string, { id: string; email: string; name: string | null; passwordHash: string | null; sessionVersion?: number }>(), updates: [] as unknown[] }));
 vi.mock("@/lib/db/client", () => ({
   prisma: {
     user: {
       findUnique: async ({ where }: { where: { email: string } }) => db.users.get(where.email) ?? null,
+      updateMany: async (args: unknown) => (db.updates.push(args), { count: 1 }),
     },
   },
 }));
 vi.mock("@/lib/workspace", () => ({ ensureWorkspaceForUser: vi.fn() }));
 
 import { hashPassword, passwordProblem, verifyPassword } from "../lib/users/password";
-import { accountErrorFromQuery, checkCredentials } from "../lib/users/accounts";
+import { accountErrorFromQuery, checkCredentials, setPassword } from "../lib/users/accounts";
+import { isSessionCurrent } from "../lib/users/session-version";
 import { safeCallbackUrl } from "../lib/users/redirect";
 
 describe("password hashing", () => {
@@ -98,7 +100,7 @@ describe("credential checks", { timeout: 30_000 }, () => {
 
   it("signs in regardless of email case or surrounding spaces", async () => {
     const result = await checkCredentials("  Owner@Shop.IR ", "good password", "1.2.3.4");
-    expect(result).toEqual({ ok: true, user: { id: "u1", email: "owner@shop.ir", name: "Owner" } });
+    expect(result).toEqual({ ok: true, user: { id: "u1", email: "owner@shop.ir", name: "Owner", sessionVersion: 0 } });
   });
 
   it("gives the same answer for an unknown email as for a wrong password", async () => {
@@ -143,6 +145,22 @@ describe("credential checks", { timeout: 30_000 }, () => {
     expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
     for (let i = 0; i < 4; i++) await checkCredentials("owner@shop.ir", "wrong", null);
     expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
+  });
+});
+
+describe("sessions after a password change", () => {
+  it("changing the password bumps the session counter, which signs out tokens issued before it", async () => {
+    db.updates.length = 0;
+    await setPassword("owner@shop.ir", "a new good password");
+    expect(db.updates[0]).toMatchObject({ data: { sessionVersion: { increment: 1 } } });
+  });
+
+  it("a token is current only while its counter equals the user's, and an old token without one counts as 0", () => {
+    expect(isSessionCurrent(0, 0)).toBe(true);
+    expect(isSessionCurrent(undefined, 0)).toBe(true);
+    expect(isSessionCurrent(0, 1)).toBe(false);
+    expect(isSessionCurrent(undefined, 2)).toBe(false);
+    expect(isSessionCurrent("1", 1)).toBe(false);
   });
 });
 

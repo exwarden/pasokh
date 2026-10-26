@@ -18,6 +18,8 @@ model User {
   /// scrypt hash (lib/auth/password.ts). Null for accounts that only ever
   /// signed in by magic link.
   passwordHash  String?
+  /// Bumped when the password changes; sessions issued earlier are signed out.
+  sessionVersion Int      @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
