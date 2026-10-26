@@ -87,7 +87,7 @@ vi.mock("bullmq", () => ({
 import { ensureLab, labState, runLabAction } from "../lib/simulator/lab";
 import { saveIceBreakers } from "../lib/ice-breakers/service";
 import { encryptToken } from "../lib/meta/oauth";
-import { handoffText } from "../lib/ai/assistant";
+import { answerWithAi, handoffText } from "../lib/ai/assistant";
 import { createSmsCampaign, previewSmsCampaign, processSmsBatch, recipientsFor } from "../lib/sms/campaigns";
 import { TEMPLATE_KEYS, applyTemplate } from "../lib/templates/catalog";
 import { commandProblems, commandInputSchema, referencedCommandIds } from "../lib/commands/schema";
@@ -103,7 +103,8 @@ let process_: (job: unknown) => Promise<void>;
  * run too, unless their name is in `hold`: those stay queued, so a test can
  * act before a delayed step comes due.
  */
-async function drain(hold: string[] = []): Promise<void> {
+// The queue allows 3 attempts; `attemptsMade` is how many already failed (2 = this is the last run).
+async function drain(hold: string[] = [], attemptsMade = 0): Promise<void> {
   const held: QueuedJob[] = [];
   for (let guard = 0; state.jobs.length > 0 && guard < 50; guard++) {
     const job = state.jobs.shift() as QueuedJob;
@@ -111,7 +112,7 @@ async function drain(hold: string[] = []): Promise<void> {
       held.push(job);
       continue;
     }
-    await process_({ id: job.id, name: job.name, data: job.data, attemptsMade: 0 });
+    await process_({ id: job.id, name: job.name, data: job.data, attemptsMade, opts: { attempts: 3 } });
   }
   state.jobs.push(...held);
 }
@@ -187,6 +188,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await state.db.showcase.deleteMany();
     await state.db.sequence.deleteMany();
     await state.db.form.deleteMany();
+    await state.db.operationalEvent.deleteMany();
     await state.db.aiAssistant.deleteMany();
     await state.db.smsCampaign.deleteMany();
     await state.db.smsSettings.deleteMany();
@@ -590,6 +592,38 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
       expect(await texts()).toEqual([handoffText()]);
       expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "HANDOFF", error: expect.stringContaining("model error") });
       expect(await events("The AI assistant could not answer")).toHaveLength(1);
+    });
+
+    it("on the last attempt sends the handoff instead of leaving the customer unanswered, whatever failed", async () => {
+      await withAssistant();
+      stubModel(429);
+      await runLabAction("ws", { action: "dm", text: "بلیت چنده؟" });
+      await drain([], 2);
+      expect(await texts()).toEqual([handoffText()]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "HANDOFF" });
+      expect(await events("The AI assistant could not answer")).toHaveLength(1);
+    });
+
+    it("on an earlier attempt a busy provider is retried, not answered with the handoff", async () => {
+      await withAssistant();
+      stubModel(429);
+      await runLabAction("ws", { action: "dm", text: "بلیت چنده؟" });
+      await expect(drain([], 0)).rejects.toThrow(/busy/);
+      expect(await texts()).toEqual([]);
+    });
+
+    it("does not send the handoff once the 24-hour window has closed, and records that", async () => {
+      await withAssistant();
+      stubModel(401);
+      const { account, fan } = await ensureLab("ws");
+      await state.db.contact.create({
+        data: { instagramAccountId: account.id, igsid: fan.igsid, lastInboundAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+      });
+      const outcome = await answerWithAi({ instagramId: account.instagramId, igsid: fan.igsid, messageId: "late_1", text: "بلیت چنده؟" });
+      expect(outcome).toBe("FAILED");
+      expect(await texts()).toEqual([]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "FAILED", error: expect.stringContaining("window is closed") });
+      expect(await events("The AI assistant could not reach a customer")).toHaveLength(1);
     });
 
     it("holds back an answer with a price the knowledge base does not contain", async () => {

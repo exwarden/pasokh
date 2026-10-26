@@ -1992,6 +1992,8 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       igsid: senderId,
       messageId,
       text: messageText,
+      // BullMQ counts attempts after a failure: on the last allowed run nothing retries.
+      finalAttempt: job.attemptsMade + 1 >= (job.opts?.attempts ?? 1),
     });
   }
 }

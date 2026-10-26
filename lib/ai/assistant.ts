@@ -6,6 +6,7 @@ import { classifySendError, isConfirmedSendRejection, isDeliveryUnconfirmed } fr
 import { complete, LlmRateLimitError, type ChatTurn } from "./llm";
 import { unsupportedFacts } from "./guard";
 import { cleanAnswer, systemPrompt } from "./prompt";
+import { isInMessagingWindow } from "@/lib/contacts/touch";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Earlier exchanges the model sees, so "and the price?" has something to refer to. */
@@ -58,12 +59,15 @@ export async function answerWithAi({
   igsid,
   messageId,
   text,
+  finalAttempt = false,
 }: {
   instagramId: string;
   accountConnectionId?: string;
   igsid: string;
   messageId: string;
   text: string;
+  /** The queue will not retry this job: whatever fails now must end in a handoff, not silence. */
+  finalAttempt?: boolean;
 }): Promise<AiOutcome> {
   const assistant = await prisma.aiAssistant.findFirst({
     where: {
@@ -139,7 +143,7 @@ export async function answerWithAi({
         ),
       );
     } catch (error) {
-      if (error instanceof LlmRateLimitError) {
+      if (error instanceof LlmRateLimitError && !finalAttempt) {
         // Nothing was produced: free the claim so the job's retry asks again.
         await prisma.aiReply.delete({ where: { id: claimed.id } });
         throw error;
@@ -171,6 +175,21 @@ export async function answerWithAi({
     }
   }
 
+  // The handoff is a message like any other: Instagram refuses it once 24 hours
+  // have passed since their last message, so say that instead of trying.
+  if (handoff) {
+    const contact = await prisma.contact.findFirst({
+      where: { instagramAccountId: assistant.instagramAccount.id, igsid },
+      select: { lastInboundAt: true },
+    });
+    if (!isInMessagingWindow(contact?.lastInboundAt)) {
+      const error = `${handoff} (not sent: the 24-hour messaging window is closed)`.slice(0, 500);
+      await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error } });
+      await recordEvent(workspaceId, "WARNING", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: error });
+      return "FAILED";
+    }
+  }
+
   try {
     const context = await createInstagramContext(assistant.instagramAccount, `ai:${claimed.id}`);
     await sendOutboundMessage({
@@ -182,7 +201,13 @@ export async function answerWithAi({
   } catch (raw) {
     // Instagram asked us to wait: the answer stays stored (PENDING) and the
     // retry sends it as written.
-    if (raw instanceof RateLimitError) throw raw;
+    if (raw instanceof RateLimitError) {
+      if (!finalAttempt) throw raw;
+      // No retry is left: say so rather than leave the reply waiting for ever.
+      await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error: "Instagram asked us to wait and no retry was left" } });
+      await recordEvent(workspaceId, "ERROR", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: "rate limited on the last attempt" });
+      return "FAILED";
+    }
     const error = classifySendError(raw);
     const status = isDeliveryUnconfirmed(error) || !isConfirmedSendRejection(error) ? "UNCONFIRMED" : "FAILED";
     await prisma.aiReply.update({ where: { id: claimed.id }, data: { status, error: error instanceof Error ? error.message : String(error) } });
