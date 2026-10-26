@@ -70,6 +70,7 @@ if (Test-Path .env) {
         "CRON_SECRET=$(New-Secret 32)",
         "ENCRYPTION_KEY=$(New-Secret 32)",
         "POSTGRES_PASSWORD=$(New-Secret 16)",
+        "SETUP_TOKEN=$(New-Secret 16)",
         "",
         "COMPOSE_PROFILES=$Profiles",
         "PASOKH_TUNNEL=$Tunnel",

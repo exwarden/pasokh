@@ -35,6 +35,9 @@ vi.mock("@/lib/queue/client", () => ({
 import { hashInvitationToken } from "../lib/workspace-invitations";
 import { AccountError, createFirstOwner, createInvitedUser, needsFirstRunSetup } from "../lib/users/accounts";
 
+const SETUP_TOKEN = "test-setup-token-0123456789";
+process.env.SETUP_TOKEN = SETUP_TOKEN;
+
 const schema = `first_run_${randomBytes(4).toString("hex")}`;
 let sql: Client;
 
@@ -44,6 +47,7 @@ const owner = (email: string) => ({
   password: "good password",
   confirm: "good password",
   workspaceName: "Shop",
+  setupToken: SETUP_TOKEN,
 });
 
 describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
@@ -67,6 +71,12 @@ describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
 
   beforeEach(async () => {
     await sql.query(`TRUNCATE "User" CASCADE`);
+  });
+
+  it("a wrong or missing setup token creates nothing, however correct the rest is", async () => {
+    await expect(createFirstOwner({ ...owner("x@shop.ir"), setupToken: "guess" })).rejects.toThrow("The setup token is wrong.");
+    await expect(createFirstOwner({ ...owner("x@shop.ir"), setupToken: "" })).rejects.toThrow("The setup token is wrong.");
+    expect(await needsFirstRunSetup()).toBe(true);
   });
 
   it("two setup forms submitted at the same moment create exactly one owner", async () => {

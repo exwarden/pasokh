@@ -136,6 +136,7 @@ NEXTAUTH_SECRET=$(secret 32)
 CRON_SECRET=$(secret 32)
 ENCRYPTION_KEY=$(secret 32)
 POSTGRES_PASSWORD=$(secret 16)
+SETUP_TOKEN=$(secret 16)
 
 COMPOSE_PROFILES=$PROFILES
 PASOKH_TUNNEL=$TUNNEL
@@ -193,6 +194,7 @@ fi
 echo
 say "✅ پاسخ اجرا شد." "✅ Pasokh is running."
 say "   آدرس: ${URL:-http://localhost:$PORT}" "   Address: ${URL:-http://localhost:$PORT}"
+say "   توکن راه‌اندازی (SETUP_TOKEN) در $DIR/.env است؛ برای ساخت حساب مدیر لازم است." "   The setup token (SETUP_TOKEN) is in $DIR/.env; creating the owner account needs it."
 say "   این آدرس را باز کنید و حساب مدیر را بسازید. بعد در «تنظیمات» کلید API زرنیو را وارد کنید و اینستاگرام را وصل کنید." \
     "   Open it and create the owner account. Then, in Settings, paste a Zernio API key and connect Instagram."
 if grep -q '^PASOKH_TUNNEL=quick' .env; then

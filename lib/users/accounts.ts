@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser } from "@/lib/workspace";
 import { hashInvitationToken } from "@/lib/workspace-invitations";
+import { setupTokenMatches } from "./setup-token";
 import { hashPassword, passwordProblem, verifyPassword } from "./password";
 import { clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
 
@@ -24,6 +25,8 @@ const ACCOUNT_ERROR_KEYS = [
   "Password is too long.",
   "Passwords do not match.",
   "Setup is already complete. Sign in instead.",
+  "The setup token is wrong.",
+  "Too many wrong setup tokens. Try again in 15 minutes.",
   "This invitation is no longer valid.",
   "An account with this email already exists. Sign in to accept the invitation.",
 ] as const;
@@ -60,7 +63,10 @@ export async function createFirstOwner(input: {
   password: string;
   confirm: string;
   workspaceName: string;
+  /** SETUP_TOKEN from the server's .env: proof the caller controls the server. */
+  setupToken: string;
 }): Promise<{ userId: string; email: string }> {
+  if (!setupTokenMatches(input.setupToken)) throw new AccountError("The setup token is wrong.");
   const email = normalizeEmail(input.email);
   validate(email, input.password, input.confirm);
   const passwordHash = await hashPassword(input.password);
