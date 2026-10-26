@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/client";
+import { secretsMatch } from "@/lib/net/secrets";
+import { noteBadWebhookSignature } from "@/lib/ops/webhook-alerts";
 import {
   parseCommentEvents,
   verifyWebhookSignature,
@@ -13,7 +14,7 @@ export async function GET(request: NextRequest) {
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
-  if (mode === "subscribe" && token === process.env.WEBHOOK_VERIFY_TOKEN) {
+  if (mode === "subscribe" && secretsMatch(token, process.env.WEBHOOK_VERIFY_TOKEN)) {
     return new NextResponse(challenge, { status: 200 });
   }
 
@@ -28,23 +29,9 @@ export async function POST(request: NextRequest) {
   const signature = request.headers.get("x-hub-signature-256");
 
   if (!verifyWebhookSignature(rawBody, signature)) {
-    // Record the attempt so a signature mismatch is visible rather than a
-    // silent 401. This is the common symptom of FACEBOOK_APP_SECRET being
-    // set to the wrong app's secret for the webhook's signing key.
-    await prisma.operationalEvent
-      .create({
-        data: {
-          source: "SYSTEM",
-          level: "WARNING",
-          message: "Webhook signature verification failed",
-          payload: {
-            hadSignatureHeader: Boolean(signature),
-            bodyLength: rawBody.length,
-            bodyPreview: rawBody.slice(0, 200),
-          },
-        },
-      })
-      .catch(() => {});
+    // Visible rather than a silent 401 (the common cause is FACEBOOK_APP_SECRET
+    // belonging to the wrong app), but rate-limited and without the body.
+    await noteBadWebhookSignature({ hadSignatureHeader: Boolean(signature), bodyLength: rawBody.length });
     return NextResponse.json(
       { success: false, error: "Invalid signature" },
       { status: 401 }

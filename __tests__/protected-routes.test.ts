@@ -26,6 +26,9 @@ vi.mock("@/lib/auth", () => ({
   isEmailLoginEnabled: () => false,
 }));
 
+// Alerting on a bad signature uses Redis; it is not what these tests are about.
+vi.mock("@/lib/ops/webhook-alerts", () => ({ noteBadWebhookSignature: async () => undefined }));
+
 // Any use of the database or the queue without a session is a failure.
 vi.mock("@/lib/db/client", () => ({
   prisma: new Proxy(
