@@ -36,6 +36,23 @@ export function getEncryptionKeyHex(): string {
   return value;
 }
 
+/**
+ * Keys that stored secrets may still be encrypted with, after ENCRYPTION_KEY
+ * was changed: ENCRYPTION_KEY_PREVIOUS, one or more 32-byte hex keys separated
+ * by commas. Used only to read; everything new is written with ENCRYPTION_KEY.
+ * See npm run keys:rotate.
+ */
+export function getPreviousEncryptionKeysHex(): string[] {
+  return (process.env.ENCRYPTION_KEY_PREVIOUS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean)
+    .map((key) => {
+      if (!HEX_32_BYTE.test(key)) throw new Error("ENCRYPTION_KEY_PREVIOUS must be 32-byte hex keys separated by commas");
+      return key;
+    });
+}
+
 // Env vars that must be present before an Instagram OAuth round trip can even
 // start. Checked up front so a self-hoster with a half-filled .env gets the
 // variable names back instead of an unhandled throw from requireEnv().

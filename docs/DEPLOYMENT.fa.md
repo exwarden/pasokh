@@ -61,4 +61,17 @@ cp .env.example .env     # سپس رمزها را بسازید: openssl rand -he
 docker compose run --rm --user root --entrypoint chown web -R node:node /app/data
 ```
 
-**`ENCRYPTION_KEY` را هرگز تغییر ندهید و از `.env` یک نسخهٔ پشتیبان جدا از سرور نگه دارید.** بدون آن توکن‌های ذخیره‌شده خوانده نمی‌شوند.
+**از `.env` یک نسخهٔ پشتیبان جدا از سرور نگه دارید.** بدون `ENCRYPTION_KEY` توکن‌های ذخیره‌شده خوانده نمی‌شوند.
+
+### چرخش `ENCRYPTION_KEY`
+
+فقط با این روند (هرگز کلید را مستقیم عوض نکنید):
+
+1. از دیتابیس و از `.env` نسخهٔ پشتیبان بگیرید.
+2. کلید جدید بسازید (`openssl rand -hex 32`)؛ کلید قدیمی را در `ENCRYPTION_KEY_PREVIOUS` و کلید جدید را در `ENCRYPTION_KEY` بگذارید و `docker compose up -d` بزنید. برنامه با هر دو کلید می‌خواند و با کلید جدید می‌نویسد.
+3. اول بدون تغییر ببینید چه چیزی روی کلید قدیمی است، بعد اعمال کنید:
+   ```bash
+   docker compose exec web npm run keys:rotate
+   docker compose exec web npm run keys:rotate -- --apply
+   ```
+4. وقتی گزارش «0 on an old key» و «0 unreadable» داد، `ENCRYPTION_KEY_PREVIOUS` را حذف کنید.

@@ -30,6 +30,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${baseUrl}/login`);
   }
 
+  // The link was made for one person. Anyone else's session, however privileged,
+  // must not complete it: that is how a forged link attaches an account to a
+  // workspace its owner never chose.
+  if (state.userId !== session.user.id) {
+    return NextResponse.redirect(`${baseUrl}/settings?instagram=forbidden`);
+  }
+
   const membership = await prisma.workspaceMember.findFirst({
     where: {
       workspaceId: state.workspaceId,
