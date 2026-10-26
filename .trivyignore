@@ -1,0 +1,20 @@
+# Accepted risk, decided by the owner in Phase 2: nodemailer stays on 7.x because
+# EMAIL_SERVER is never set here, so none of these code paths runs. The fix is a
+# major upgrade (10.x). Remove these lines when nodemailer is upgraded.
+GHSA-268h-hp4c-crq3
+GHSA-2x7j-588g-ccc2
+GHSA-39m8-27wv-hr27
+GHSA-6vj9-mwq6-2f5v
+GHSA-85x2-q946-cp5h
+GHSA-8c8m-p3m8-cjg8
+GHSA-8m3c-c648-2xjj
+GHSA-8vvx-rff5-p5rq
+GHSA-c7w3-x93f-qmm8
+GHSA-cc9r-2j5m-2m83
+GHSA-m943-m63m-w62w
+GHSA-p6gq-j5cr-w38f
+GHSA-r7g4-qg5f-qqm2
+GHSA-v53p-9fqp-m79j
+GHSA-vvjj-xcjg-gr5g
+GHSA-wmmp-3585-3rmp
+GHSA-wqvq-jvpq-h66f

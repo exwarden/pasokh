@@ -8,7 +8,9 @@ name: Publish image
 #   (run by hand)  -> :<branch>, :sha-xxxxxxx
 #
 # Nothing is published on a plain push: a release is a tag we create on
-# purpose. Deploy by the digest in the run summary, never by a floating tag.
+# purpose. The tag runs CI first (job `ci`) and a Trivy scan before any tag is
+# attached to the image. Deploy by the digest in the run summary, never by a
+# floating tag.
 #
 # Each architecture builds on its own native runner (arm64 under emulation
 # takes the Next.js build from minutes to most of an hour), then one job joins
@@ -26,7 +28,15 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/pasokh
 
 jobs:
+  # Typecheck, lint, tests (with Postgres and Redis), build and the audit gate.
+  # Nothing below runs unless this passes, whichever commit the tag points at.
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
     permissions:
       contents: read
       packages: write
@@ -82,6 +92,8 @@ jobs:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: /tmp/digests
@@ -110,6 +122,19 @@ jobs:
             type=sha,prefix=sha-,format=short
           flavor: |
             latest=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      # Before any tag exists: a failing scan leaves only untagged layers behind.
+      # Fails on fixable HIGH or CRITICAL findings; the accepted ones are in
+      # .trivyignore, each with the reason. The scanner image is pinned by digest.
+      - name: Scan each image (fail on fixable HIGH or CRITICAL)
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for file in /tmp/digests/*; do
+            digest="sha256:$(basename "$file")"
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD               -v "$GITHUB_WORKSPACE/.trivyignore:/.trivyignore:ro"               aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c               image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed               --ignorefile /.trivyignore --exit-code 1 --no-progress               "${{ env.IMAGE }}@${digest}"
+          done
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
