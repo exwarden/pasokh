@@ -124,6 +124,8 @@
   "Conversations": "گفتگوها",
   "Copied!": "کپی شد!",
   "Copy": "کپی",
+  "Setup is unavailable right now. Try again in a minute.": "راه‌اندازی فعلاً ممکن نیست. یک دقیقه بعد دوباره تلاش کنید.",
+  "Sign-in is unavailable right now because a server component is not responding. Try again in a minute; if it persists, tell the administrator.": "ورود فعلاً ممکن نیست چون یکی از بخش‌های سرور پاسخ نمی‌دهد. یک دقیقه بعد دوباره تلاش کنید؛ اگر ادامه داشت به مدیر خبر بدهید.",
   "Your uploaded files take too much space. Delete some first.": "فایل‌های آپلودشده فضای زیادی گرفته‌اند. چند فایل را حذف کنید.",
   "The upload size is missing.": "حجم فایل در درخواست مشخص نیست.",
   "Enter a full web address starting with https:// or http://.": "آدرس کامل وب را با https:// یا http:// وارد کنید.",

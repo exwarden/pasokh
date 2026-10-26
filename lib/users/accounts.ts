@@ -3,7 +3,7 @@ import { ensureWorkspaceForUser } from "@/lib/workspace";
 import { hashInvitationToken } from "@/lib/workspace-invitations";
 import { setupTokenMatches } from "./setup-token";
 import { hashPassword, passwordProblem, verifyPassword } from "./password";
-import { clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
+import { ThrottleUnavailableError, clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -26,6 +26,7 @@ const ACCOUNT_ERROR_KEYS = [
   "Passwords do not match.",
   "Setup is already complete. Sign in instead.",
   "The setup token is wrong.",
+  "Setup is unavailable right now. Try again in a minute.",
   "Too many wrong setup tokens. Try again in 15 minutes.",
   "This invitation is no longer valid.",
   "An account with this email already exists. Sign in to accept the invitation.",
@@ -124,11 +125,16 @@ export async function createInvitedUser(input: {
 
 export type CredentialCheck =
   | { ok: true; user: { id: string; email: string; name: string | null; sessionVersion: number } }
-  | { ok: false; reason: "throttled" | "invalid" };
+  | { ok: false; reason: "throttled" | "invalid" | "unavailable" };
 
 export async function checkCredentials(rawEmail: string, password: string, ip: string | null): Promise<CredentialCheck> {
   const email = normalizeEmail(rawEmail);
-  if (await isLoginThrottled(email, ip)) return { ok: false, reason: "throttled" };
+  try {
+    if (await isLoginThrottled(email, ip)) return { ok: false, reason: "throttled" };
+  } catch (error) {
+    if (error instanceof ThrottleUnavailableError) return { ok: false, reason: "unavailable" };
+    throw error;
+  }
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true, email: true, name: true, passwordHash: true, sessionVersion: true },

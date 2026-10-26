@@ -38,7 +38,13 @@ export default async function SetupPage({
   async function completeSetup(formData: FormData) {
     "use server";
     const field = (name: string) => String(formData.get(name) ?? "");
-    if (await isLoginThrottled(SETUP_THROTTLE_KEY, null)) {
+    let throttled: boolean;
+    try {
+      throttled = await isLoginThrottled(SETUP_THROTTLE_KEY, null);
+    } catch {
+      redirect(`/setup?error=${encodeURIComponent("Setup is unavailable right now. Try again in a minute.")}`);
+    }
+    if (throttled) {
       redirect(`/setup?error=${encodeURIComponent("Too many wrong setup tokens. Try again in 15 minutes.")}`);
     }
     try {

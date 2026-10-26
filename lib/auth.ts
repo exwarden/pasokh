@@ -36,6 +36,10 @@ class ThrottledSignin extends CredentialsSignin {
   code = "throttled";
 }
 
+class SigninUnavailable extends CredentialsSignin {
+  code = "unavailable";
+}
+
 function clientIp(request: Request): string | null {
   return clientIpFromHeaders(request.headers);
 }
@@ -59,6 +63,7 @@ export const authConfig = {
         const result = await checkCredentials(email, password, clientIp(request));
         if (!result.ok) {
           if (result.reason === "throttled") throw new ThrottledSignin();
+          if (result.reason === "unavailable") throw new SigninUnavailable();
           return null;
         }
         if (!isEmailAllowedToSignIn(result.user.email)) return null;

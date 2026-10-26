@@ -148,6 +148,48 @@ describe("credential checks", { timeout: 30_000 }, () => {
   });
 });
 
+describe("when Redis does not answer", { timeout: 30_000 }, () => {
+  beforeEach(async () => {
+    redis.store.clear();
+    db.users.clear();
+    db.users.set("owner@shop.ir", { id: "u1", email: "owner@shop.ir", name: "Owner", passwordHash: await hashPassword("good password") });
+  });
+
+  it("refuses sign-in quickly with its own reason, even with the right password, instead of hanging or letting guesses through", async () => {
+    const original = redis.client.get;
+    redis.client.get = () => new Promise(() => {});
+    try {
+      const started = Date.now();
+      expect(await checkCredentials("owner@shop.ir", "good password", "1.2.3.4")).toEqual({ ok: false, reason: "unavailable" });
+      expect(Date.now() - started).toBeLessThan(3000);
+    } finally {
+      redis.client.get = original;
+    }
+  });
+
+  it("does the same when Redis errors", async () => {
+    const original = redis.client.get;
+    redis.client.get = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+    try {
+      expect(await checkCredentials("owner@shop.ir", "good password", null)).toEqual({ ok: false, reason: "unavailable" });
+    } finally {
+      redis.client.get = original;
+    }
+  });
+
+  it("a correct password still signs in when only the counter reset fails afterwards", async () => {
+    const original = redis.client.del;
+    redis.client.del = () => new Promise(() => {});
+    try {
+      expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
+    } finally {
+      redis.client.del = original;
+    }
+  });
+});
+
 describe("sessions after a password change", () => {
   it("changing the password bumps the session counter, which signs out tokens issued before it", async () => {
     db.updates.length = 0;
