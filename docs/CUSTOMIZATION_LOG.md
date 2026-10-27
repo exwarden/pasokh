@@ -145,3 +145,10 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
   check). Migration `20261027090000_dmlog_commenter_index` adds `DmLog(automationId, commenterId)`. The public comment
   reply is still posted per comment. Two comments handled at the same moment by two workers can both pass the check.
 - `docs/BACKLOG.md` lists the unverified Phase 3 items and the Phase 4/5 backlog.
+
+### Merge status (2026-10-27)
+
+- PR #1 (`chore/phase0-setup`) merged into `main` of `exwarden/pasokh`; the old `docker-publish.yml` on `main` published an
+  untagged-by-release image from that merge (no CI gate, no scan). Do not deploy from it.
+- PR #2 (`fix/phase2-security`) merged into `main` at 2026-10-27T08:39:44Z, merge commit
+  `2221ae9e515522725a101b32727793ebd6dd4486`. CI on the PR (run 40474024044) passed. Nothing was merged into `upstream`.
