@@ -1,6 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/automations", "/logs", "/settings"];
+// One entry per folder of app/(dashboard) except /reports, which is also the
+// prefix of public share links (its layout checks the session). The matcher
+// below has to be a literal for Next to read it; auth-proxy.test.ts keeps both in step.
+const PROTECTED_PREFIXES = [
+  "/dashboard",
+  "/automations",
+  "/logs",
+  "/settings",
+  "/contacts",
+  "/sms",
+  "/ai",
+  "/inbox",
+  "/campaigns",
+  "/commands",
+  "/diagnostics",
+  "/forms",
+  "/overview",
+  "/sequences",
+  "/showcases",
+  "/simulator",
+  "/templates",
+  "/welcome",
+];
 
 function hasSessionCookie(request: NextRequest): boolean {
   return (
@@ -33,5 +55,24 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/automations/:path*", "/logs/:path*", "/settings/:path*"],
+  matcher: [
+    "/dashboard/:path*",
+    "/automations/:path*",
+    "/logs/:path*",
+    "/settings/:path*",
+    "/contacts/:path*",
+    "/sms/:path*",
+    "/ai/:path*",
+    "/inbox/:path*",
+    "/campaigns/:path*",
+    "/commands/:path*",
+    "/diagnostics/:path*",
+    "/forms/:path*",
+    "/overview/:path*",
+    "/sequences/:path*",
+    "/showcases/:path*",
+    "/simulator/:path*",
+    "/templates/:path*",
+    "/welcome/:path*",
+  ],
 };
