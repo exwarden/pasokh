@@ -38,7 +38,7 @@ Tracks every change made in the `exwarden/pasokh` fork relative to upstream
 
 ## Phase 2: fixes (2026-10-26)
 
-Branch `fix/phase2-security` (from `chore/phase0-setup`, not pushed). Status per finding, test results and
+Branch `fix/phase2-security` (from `chore/phase0-setup`; pushed to `origin` = `exwarden/pasokh`, never to `upstream`). Status per finding, test results and
 deviations: `docs/PHASE2_REPORT.md`. Supplementary review of dm-worker, rate limiter and CI:
 `docs/PHASE2_SUPPLEMENTARY_REVIEW.md`. Deployment procedure: `docs/DEPLOYMENT.fa.md`.
 
@@ -76,7 +76,8 @@ Working rule added to the project `CLAUDE.md`: never print raw `docker compose c
 
 ## Phase 2b: follow-ups from the supplementary review (2026-10-27)
 
-Branch `fix/phase2-security` (both it and `chore/phase0-setup` pushed to `exwarden/pasokh`; no tag).
+Branch `fix/phase2-security` (pushed to `origin` = `exwarden/pasokh` up to `6f62fa7`; the six Phase 2c commits (up to `270f8fd`) were pushed afterwards; nothing goes to `upstream`; no tag).
+Pull requests (opened 2026-10-27, not merged): exwarden/pasokh#1 (`chore/phase0-setup` to `main`) and #2 (`fix/phase2-security` to `chore/phase0-setup`).
 
 - S1 `lib/automation/sender-guard.ts`: per sender and account, `AUTO_REPLIES_PER_SENDER_PER_HOUR` (20) and
   `LOOP_MESSAGES_PER_MINUTE` (10 in 60 s pauses automatic replies for an hour, one event). Echoes: both webhook parsers
