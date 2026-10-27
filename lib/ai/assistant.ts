@@ -15,6 +15,13 @@ const MEMORY_TURNS = 6;
 /** Most AI replies one workspace can use in 24 hours, whoever asks (AI_MAX_REPLIES_PER_DAY). */
 const DEFAULT_WORKSPACE_DAILY_REPLIES = 300;
 const HANDOFF_PREFIX = "Handoff: ";
+/** A PENDING reply with no stored answer is taken over by a retry after this long (AI_PENDING_STALE_MINUTES). */
+const DEFAULT_PENDING_STALE_MINUTES = 5;
+
+export function pendingStaleMs(env: Record<string, string | undefined> = process.env): number {
+  const minutes = Number(env.AI_PENDING_STALE_MINUTES);
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_PENDING_STALE_MINUTES) * 60_000;
+}
 
 function workspaceDailyLimit(): number {
   const n = Number(process.env.AI_MAX_REPLIES_PER_DAY);
@@ -83,18 +90,57 @@ export async function answerWithAi({
   let reply = await prisma.aiReply.findUnique({
     where: { assistantId_triggerId: { assistantId: assistant.id, triggerId: messageId } },
   });
-  if (reply && !(reply.status === "PENDING" && reply.answer)) return "DUPLICATE";
+
+  // Every attempt counts, not only the ones that reached Instagram: a model
+  // call is paid for whether or not the reply was delivered.
+  const since = new Date(Date.now() - DAY_MS);
+  const usage = async () => {
+    const [byPerson, inWorkspace] = await Promise.all([
+      prisma.aiReply.aggregate({ _sum: { attempts: true }, where: { assistantId: assistant.id, igsid, createdAt: { gte: since } } }),
+      prisma.aiReply.aggregate({ _sum: { attempts: true }, where: { assistant: { instagramAccount: { workspaceId } }, createdAt: { gte: since } } }),
+    ]);
+    return { byPerson: byPerson._sum.attempts ?? 0, inWorkspace: inWorkspace._sum.attempts ?? 0 };
+  };
+
+  if (reply?.status === "SENDING") {
+    // The process stopped after handing the answer to Instagram and before it
+    // recorded the outcome. The message may have been delivered: never send again.
+    const error = "The process stopped while the reply was being sent; it may have been delivered and is not sent again";
+    const moved = await prisma.aiReply.updateMany({ where: { id: reply.id, status: "SENDING" }, data: { status: "UNCONFIRMED", error } });
+    if (moved.count === 1) {
+      await recordAiEvent(workspaceId, "WARNING", "The AI assistant could not confirm a reply", { assistantId: assistant.id, igsid, reason: error });
+    }
+    return "UNCONFIRMED";
+  }
+
+  if (reply && reply.status === "PENDING" && !reply.answer) {
+    // Claimed but never answered: either another job is calling the model right
+    // now, or the process that claimed it died. Only the second is taken over.
+    const staleBefore = new Date(Date.now() - pendingStaleMs());
+    if (reply.claimedAt >= staleBefore) return "DUPLICATE";
+    const used = await usage();
+    if (used.byPerson >= assistant.dailyLimitPerPerson || used.inWorkspace >= workspaceDailyLimit()) {
+      // Another model call would go past a limit.
+      await prisma.aiReply.updateMany({
+        where: { id: reply.id, status: "PENDING", answer: null, claimedAt: { lt: staleBefore } },
+        data: { status: "FAILED", error: "The daily limit was reached before the stalled reply could be retried" },
+      });
+      return "LIMIT";
+    }
+    // Atomic: of any number of retries, exactly one changes the row.
+    const taken = await prisma.aiReply.updateMany({
+      where: { id: reply.id, status: "PENDING", answer: null, claimedAt: { lt: staleBefore } },
+      data: { claimedAt: new Date(), attempts: { increment: 1 } },
+    });
+    if (taken.count !== 1) return "DUPLICATE";
+  } else if (reply && !(reply.status === "PENDING" && reply.answer)) {
+    return "DUPLICATE";
+  }
 
   if (!reply) {
-    const since = new Date(Date.now() - DAY_MS);
-    // Every attempt counts, not only the ones that reached Instagram: a model
-    // call is paid for whether or not the reply was delivered.
-    const [attemptsByPerson, attemptsInWorkspace] = await Promise.all([
-      prisma.aiReply.count({ where: { assistantId: assistant.id, igsid, createdAt: { gte: since } } }),
-      prisma.aiReply.count({ where: { assistant: { instagramAccount: { workspaceId } }, createdAt: { gte: since } } }),
-    ]);
-    if (attemptsByPerson >= assistant.dailyLimitPerPerson) return "LIMIT";
-    if (attemptsInWorkspace >= workspaceDailyLimit()) {
+    const used = await usage();
+    if (used.byPerson >= assistant.dailyLimitPerPerson) return "LIMIT";
+    if (used.inWorkspace >= workspaceDailyLimit()) {
       // Once a day is enough to be noticed.
       const already = await prisma.operationalEvent.findFirst({
         where: { workspaceId, message: "The AI assistant reached its daily limit", createdAt: { gte: since } },
@@ -195,6 +241,11 @@ export async function answerWithAi({
 
   try {
     const context = await createInstagramContext(assistant.instagramAccount, `ai:${claimed.id}`);
+    // Atomic hand-over to Instagram. A retry that finds SENDING knows the process
+    // died somewhere inside the send and must not send again; one that loses this
+    // race (a second job on the same reply) stops here.
+    const moved = await prisma.aiReply.updateMany({ where: { id: claimed.id, status: "PENDING" }, data: { status: "SENDING" } });
+    if (moved.count !== 1) return "DUPLICATE";
     await sendOutboundMessage({
       context,
       instagramAccountId: assistant.instagramAccount.instagramId,
@@ -205,7 +256,11 @@ export async function answerWithAi({
     // Instagram asked us to wait: the answer stays stored (PENDING) and the
     // retry sends it as written.
     if (raw instanceof RateLimitError) {
-      if (!finalAttempt) throw raw;
+      if (!finalAttempt) {
+        // Nothing was sent: put it back so the retry sends the stored answer.
+        await prisma.aiReply.updateMany({ where: { id: claimed.id, status: "SENDING" }, data: { status: "PENDING" } });
+        throw raw;
+      }
       // No retry is left: say so rather than leave the reply waiting for ever.
       await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error: "Instagram asked us to wait and no retry was left" } });
       await recordAiEvent(workspaceId, "ERROR", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: "rate limited on the last attempt" });

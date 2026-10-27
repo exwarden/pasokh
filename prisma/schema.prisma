@@ -831,10 +831,18 @@ model AiReply {
   triggerId   String
   question    String
   answer      String?
-  /// PENDING | SENT | HANDOFF (the fixed "a person will answer" message was sent
+  /// PENDING | SENDING (the answer is being handed to Instagram: a row found in
+  /// this state by a retry means the process died mid-send and is never resent)
+  /// | SENT | HANDOFF (the fixed "a person will answer" message was sent
   /// instead of the model's answer) | FAILED | UNCONFIRMED
   status      String   @default("PENDING")
   error       String?
+  /// When this row was last claimed: creation, or a takeover of a PENDING row
+  /// whose process died before it stored an answer.
+  claimedAt   DateTime @default(now())
+  /// Model calls made for this row. The daily limits count these, so a takeover
+  /// that calls the model again is counted, and one that does not is not.
+  attempts    Int      @default(1)
   createdAt   DateTime @default(now())
 
   assistant AiAssistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
