@@ -11,6 +11,9 @@ export const RETENTION = [
   { table: "dmLog", env: "DM_LOG_RETENTION_DAYS", days: 180 },
   { table: "operationalEvent", env: "OPERATIONAL_EVENT_RETENTION_DAYS", days: 90 },
   { table: "aiReply", env: "AI_REPLY_RETENTION_DAYS", days: 180 },
+  // Zernio retries a delivery for about 51 hours; a week is a comfortable margin.
+  { table: "zernioEventReceipt", env: "ZERNIO_EVENT_RECEIPT_RETENTION_DAYS", days: 7 },
+  { table: "zernioSentMessage", env: "ZERNIO_SENT_MESSAGE_RETENTION_DAYS", days: 90 },
 ] as const;
 
 type Table = (typeof RETENTION)[number]["table"];
@@ -27,7 +30,7 @@ export function retentionDays(entry: (typeof RETENTION)[number], env: Record<str
 }
 
 export async function runRetention(now = new Date(), env: Record<string, string | undefined> = process.env): Promise<Record<Table, number>> {
-  const deleted = { webhookEvent: 0, dmLog: 0, operationalEvent: 0, aiReply: 0 } as Record<Table, number>;
+  const deleted = { webhookEvent: 0, dmLog: 0, operationalEvent: 0, aiReply: 0, zernioEventReceipt: 0, zernioSentMessage: 0 } as Record<Table, number>;
   for (const entry of RETENTION) {
     const days = retentionDays(entry, env);
     if (days === 0) continue;
