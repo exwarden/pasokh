@@ -207,3 +207,17 @@ Branch `feat/zernio-ingestion-fixes`. Findings and the verified/unverified split
 - Fixtures: `__tests__/fixtures/zernio/` (sanitized). Tests: `zernio-ingestion.test.ts`, `zernio-webhook-route.db.test.ts`.
 - Upstream-derived files touched: `lib/ops/retention.ts`, `.env.example`, `__tests__/retention.test.ts`.
 - Not verified: the signature against Zernio's real one (secret was not available).
+
+### Phase 4a-2: ingestion hardening (2026-10-27)
+
+Branch `feat/zernio-ingestion-hardening` (stacked on `feat/zernio-ingestion-fixes` until that merges).
+
+- Receipt state machine: `ZernioEventReceipt.status` (CLAIMED | ENQUEUED) and `claimedAt`, migration
+  `20261027150000_zernio_receipt_status` (existing rows become ENQUEUED). `lib/zernio/receipt.ts` claims, takes over stale
+  claims atomically (`ZERNIO_CLAIM_STALE_SECONDS`, 120) and marks ENQUEUED; a fresh duplicate gets 503.
+- Body cap: `lib/net/read-body-limited.ts` (`WEBHOOK_MAX_BODY_BYTES`, 256 KiB) on the Zernio and Meta webhook routes, and
+  `request_body { max_size 256KiB }` in the `Caddyfile` for the webhook paths only. Upstream-derived files touched:
+  `app/api/webhook/route.ts`, `Caddyfile`, `.env.example`.
+- Known limits recorded: DMs have no reconciler safety net (only comments do), and the comment reconciler depends on
+  `automation.postId` being the Instagram media id (`docs/ZERNIO_INGESTION.fa.md`).
+

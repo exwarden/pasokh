@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { secretsMatch } from "@/lib/net/secrets";
+import { BodyTooLargeError, readBodyLimited } from "@/lib/net/read-body-limited";
 import { noteBadWebhookSignature } from "@/lib/ops/webhook-alerts";
 import {
   parseCommentEvents,
@@ -25,7 +26,15 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const rawBody = await request.text();
+  let rawBody: string;
+  try {
+    rawBody = (await readBodyLimited(request)).toString("utf8");
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      return NextResponse.json({ success: false, error: "Payload too large" }, { status: 413 });
+    }
+    throw error;
+  }
   const signature = request.headers.get("x-hub-signature-256");
 
   if (!verifyWebhookSignature(rawBody, signature)) {
