@@ -284,4 +284,27 @@ describe.skipIf(!DATABASE_URL)("Zernio webhook route on a real Postgres", () => 
       }
     });
   });
+  describe("body size cap", () => {
+    const big = "a".repeat(300_000);
+    const post = (init: RequestInit) =>
+      POST(new Request("http://localhost/api/zernio/webhook/ws", { method: "POST", ...init } as RequestInit), { params: Promise.resolve({ workspaceId: "ws" }) });
+
+    it("refuses a declared oversize body with 413 before claiming or queueing anything", async () => {
+      const res = await post({ headers: { "content-length": String(big.length) }, body: big });
+      expect(res.status).toBe(413);
+      expect(state.add).not.toHaveBeenCalled();
+      expect(await state.db.zernioEventReceipt.count()).toBe(0);
+    });
+
+    it("refuses an oversize streamed body (no Content-Length) with 413", async () => {
+      const stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(big)); c.close(); } });
+      const res = await post({ body: stream, duplex: "half" } as RequestInit);
+      expect(res.status).toBe(413);
+      expect(state.add).not.toHaveBeenCalled();
+    });
+
+    it("still accepts a normal event", async () => {
+      expect((await deliver(fixtureBody(FIXTURE.messageText))).status).toBe(200);
+    });
+  });
 });

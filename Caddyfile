@@ -11,5 +11,12 @@
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		-Server
 	}
+	# Webhook bodies are tiny; refuse large ones at the edge before the app reads them.
+	# Only these paths: the dashboard has uploads that need more. Keep in step with
+	# WEBHOOK_MAX_BODY_BYTES (256 KiB by default).
+	@webhooks path /api/zernio/webhook/* /api/webhook /api/webhook/*
+	request_body @webhooks {
+		max_size 256KiB
+	}
 	reverse_proxy web:3000
 }

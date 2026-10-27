@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db/client';
 import { decryptToken } from '@/lib/meta/oauth';
+import { BodyTooLargeError, readBodyLimited } from '@/lib/net/read-body-limited';
 import {
   getZernioAccountId, normalizeZernioEvent, parseZernioSentMessage, readZernioHeaders,
   resolveZernioEventId, verifyZernioSignature, zernioAccountSchema,
@@ -17,7 +18,11 @@ export async function POST(request: Request, segmentData: { params: Promise<{ wo
   // Same answer as a bad signature: whether a workspace id exists is not for strangers to learn.
   if (!connection?.webhookId) return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   // The signature covers the exact bytes Zernio sent, so verify those, not a decoded string.
-  const rawBody = Buffer.from(await request.arrayBuffer());
+  let rawBody: Buffer;
+  try { rawBody = await readBodyLimited(request); } catch (error) {
+    if (error instanceof BodyTooLargeError) return NextResponse.json({ error: 'Payload too large' }, { status: 413 });
+    throw error;
+  }
   const headers = readZernioHeaders(request.headers);
   if (!verifyZernioSignature({ rawBody, signature: headers.signature, secret: decryptToken(connection.webhookSecret) })) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
