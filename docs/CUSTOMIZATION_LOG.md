@@ -152,3 +152,42 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
   untagged-by-release image from that merge (no CI gate, no scan). Do not deploy from it.
 - PR #2 (`fix/phase2-security`) merged into `main` at 2026-10-27T08:39:44Z, merge commit
   `2221ae9e515522725a101b32727793ebd6dd4486`. CI on the PR (run 40474024044) passed. Nothing was merged into `upstream`.
+
+### Phase 3 decision (2026-10-27)
+
+- Meta direct is set aside: a Meta Developer account cannot be created from Iran. The connection runs through Zernio.
+  `CLAUDE.md` (parent folder, outside this repository) was updated: rule 1, Phase 3, and a "Decision" section.
+- Added `docs/PHASE3_ZERNIO.fa.md` (documentation findings, terms of use, Zernio path in the code, risks, message budget
+  design, estimates) and `docs/ZERNIO_ONBOARDING.fa.md` (checklist). `docs/BACKLOG.md` updated. No code changed.
+
+### Zernio support answers and docs review (2026-10-27)
+
+- `docs/PHASE3_ZERNIO.fa.md`, `docs/ZERNIO_ONBOARDING.fa.md` and `docs/BACKLOG.md` updated with the Zernio support
+  answers (Ana, Elean), the TOS / Privacy / DPA / subprocessors / Trust Center pages and the webhook documentation.
+  New sections: privacy risk, free-tier limits with the manual fallback, brand connection order, and the
+  `account.accountId` proposal. Budget design now uses 7,000 (warn), 8,500 (hold P1/P2) and 9,500 (hard stop of all
+  automatic sends), with held messages and a merged sales notification, and 403 `message_allowance_exceeded` handling.
+- TOS (updated 2026-10-09): no country, sanctions or export clause; section 8 allows suspension without notice for any
+  reason. Consistent with support's statement; gate marked "support confirmed, pending TOS conformance". Not legal advice.
+- No code changed. `normalize-event.ts` and the webhook route still read `account.id` only; the change is a proposal.
+
+### rc2 release review (2026-10-27)
+
+- Tag `v0.2.1-fa.rc2` on commit `e6e8525655b33f2559ba4d8692d31767b4c668ae` (merge of PR #3); publish run 40500474514
+  succeeded. Final manifest (index): `ghcr.io/exwarden/pasokh@sha256:22aa70348bd34af79bbe2cf7dcd8caffbbb6f3ac5146b81f5a63ba3572d3f900`,
+  tags `0.2.1-fa.rc2`, `sha-e6e8525` and `latest` (all three resolve to the same digest).
+- The digests the CI scanned (`56fe79bf...` arm64, `d443c4ae...` amd64) are the per-architecture indexes pushed by the
+  build jobs. `docker buildx imagetools inspect` shows `56fe79bf...` holds image `c7fb5f74...` (linux/arm64) plus its
+  attestation `d9e65979...`, and `d443c4ae...` holds `f9b135a4...` (linux/amd64) plus attestation `5b156e7f...`. The
+  final index `22aa7034...` lists exactly those four manifests (merge job log: "copying ... from ...@sha256:56fe79bf" /
+  "...d443c4ae"). So the scanned images are the ones under the final manifest.
+- Trivy in CI (pinned `aquasec/trivy@sha256:790fd66d...`, `--scanners vuln`, HIGH/CRITICAL, fixable only): 0 findings on
+  both architectures. Note: that step does not look for secrets.
+- Secret scan run locally on the final digest, both platforms (Trivy 0.76.1, same pinned image,
+  `--scanners secret`, JSON output, only rule ids and paths read): 0 secrets in OS packages and Node.js targets. Image
+  config: environment variable names are PATH, NODE_VERSION, YARN_VERSION, NODE_ENV, NEXT_TELEMETRY_DISABLED,
+  PASOKH_DATA_DIR (values not read); user `node`; no layer history entry mentions password, secret, token or api_key; no
+  `.env*`, `.git`, `.npmrc`, `*.key` or private-key files outside `node_modules` and system certificate stores (only the
+  system `cert.pem`). This reduces the risk; it is not proof that nothing sensitive exists.
+- `:latest` was attached to the release candidate: the workflow forces `latest=true` for every `v*` tag. Proposal in
+  `docs/BACKLOG.md` (not changed). Also proposed: add `secret` to the CI scan.
