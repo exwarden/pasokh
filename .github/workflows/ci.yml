@@ -80,4 +80,4 @@ jobs:
       - run: bash -n install.sh && sh -n scripts/docker-entrypoint.sh && sh -n scripts/cron.sh
       - name: Compose file is valid
         # The compose file reads .env, which only an installed copy has.
-        run: touch .env && POSTGRES_PASSWORD=x PASOKH_IMAGE=pasokh:ci docker compose config --quiet
+        run: touch .env && POSTGRES_PASSWORD=x CRON_SECRET=ci-placeholder-0123456789 PASOKH_IMAGE=pasokh:ci docker compose config --quiet
