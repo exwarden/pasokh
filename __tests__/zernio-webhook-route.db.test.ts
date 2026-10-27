@@ -35,6 +35,7 @@ vi.mock("@/lib/queue/client", () => ({
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: () => "fixture-secret-not-a-real-one" }));
 
 import { POST } from "../app/api/zernio/webhook/[workspaceId]/route";
+import { claimZernioEvent } from "../lib/zernio/receipt";
 
 const schema = `zernio_route_${randomBytes(4).toString("hex")}`;
 let sql: Client;
@@ -190,5 +191,97 @@ describe.skipIf(!DATABASE_URL)("Zernio webhook route on a real Postgres", () => 
     expect((await (await deliver(other)).json())).toMatchObject({ ignored: true });
     expect(await state.db.zernioEventReceipt.count()).toBe(0);
     expect(state.add).not.toHaveBeenCalled();
+  });
+  describe("receipt states", () => {
+    const eventOf = (n: number) => ({ eventId: fixture(n).id as string, event: fixture(n).event as string });
+    const seed = (n: number, status: "CLAIMED" | "ENQUEUED", ageMs: number) =>
+      state.db.zernioEventReceipt.create({ data: { workspaceId: "ws", ...eventOf(n), status, claimedAt: new Date(Date.now() - ageMs) } });
+    const statusOf = async (n: number) => (await state.db.zernioEventReceipt.findFirstOrThrow({ where: { eventId: eventOf(n).eventId } })).status;
+
+    it("ENQUEUED: acknowledged as a duplicate, nothing runs", async () => {
+      await seed(FIXTURE.commentCustomer, "ENQUEUED", 60 * 60_000);
+      expect(await (await deliver(fixtureBody(FIXTURE.commentCustomer))).json()).toEqual({ success: true, duplicate: true });
+      expect(state.add).not.toHaveBeenCalled();
+    });
+
+    it("a successful run leaves the receipt ENQUEUED", async () => {
+      await deliver(fixtureBody(FIXTURE.commentCustomer));
+      expect(await statusOf(FIXTURE.commentCustomer)).toBe("ENQUEUED");
+    });
+
+    it("CLAIMED and stale (the process died before queueing): reprocessed, then ENQUEUED", async () => {
+      await seed(FIXTURE.commentCustomer, "CLAIMED", 10 * 60_000);
+      const res = await deliver(fixtureBody(FIXTURE.commentCustomer));
+      expect(await res.json()).toEqual({ success: true });
+      expect(jobs()).toEqual(["process-comment"]);
+      expect(await statusOf(FIXTURE.commentCustomer)).toBe("ENQUEUED");
+    });
+
+    it("CLAIMED and fresh (still being processed): 503 with Retry-After, nothing runs, claim untouched", async () => {
+      await seed(FIXTURE.commentCustomer, "CLAIMED", 5_000);
+      const res = await deliver(fixtureBody(FIXTURE.commentCustomer));
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("30");
+      expect(state.add).not.toHaveBeenCalled();
+      expect(await statusOf(FIXTURE.commentCustomer)).toBe("CLAIMED");
+    });
+
+    it("the stale limit is configurable", async () => {
+      await seed(FIXTURE.commentCustomer, "CLAIMED", 30_000);
+      vi.stubEnv("ZERNIO_CLAIM_STALE_SECONDS", "10");
+      try {
+        expect((await deliver(fixtureBody(FIXTURE.commentCustomer))).status).toBe(200);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      expect(jobs()).toEqual(["process-comment"]);
+    });
+
+    it("two deliveries racing for one stale claim: exactly one takes it", async () => {
+      await seed(FIXTURE.commentCustomer, "CLAIMED", 10 * 60_000);
+      const results = await Promise.all(Array.from({ length: 5 }, () => claimZernioEvent({ workspaceId: "ws", ...eventOf(FIXTURE.commentCustomer) })));
+      expect(results.filter((r) => r === "taken_over")).toHaveLength(1);
+      expect(results.filter((r) => r === "in_flight")).toHaveLength(4);
+    });
+
+    it("the same race through the route queues the comment once", async () => {
+      await seed(FIXTURE.commentCustomer, "CLAIMED", 10 * 60_000);
+      const responses = await Promise.all([1, 2, 3].map(() => deliver(fixtureBody(FIXTURE.commentCustomer))));
+      const bodies = await Promise.all(responses.map((r) => r.json()));
+      expect(jobs()).toEqual(["process-comment"]);
+      expect(bodies.filter((b) => b.success && !b.duplicate)).toHaveLength(1);
+      expect(responses.every((r) => [200, 503].includes(r.status))).toBe(true);
+    });
+
+    it("a processing failure removes the claim, and the retry is processed", async () => {
+      state.add.mockRejectedValueOnce(new Error("redis down"));
+      expect((await deliver(fixtureBody(FIXTURE.commentCustomer))).status).toBe(500);
+      expect(await state.db.zernioEventReceipt.count()).toBe(0);
+      expect((await deliver(fixtureBody(FIXTURE.commentCustomer))).status).toBe(200);
+      expect(await statusOf(FIXTURE.commentCustomer)).toBe("ENQUEUED");
+    });
+
+    it("receipts that existed before the status column are ENQUEUED, so they are never reprocessed", async () => {
+      const old = `zernio_receipt_old_${randomBytes(4).toString("hex")}`;
+      const dirs = readdirSync(MIGRATIONS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+      const last = dirs.indexOf("20261027150000_zernio_receipt_status");
+      expect(last).toBeGreaterThan(0);
+      const client = new Client({ connectionString: DATABASE_URL });
+      await client.connect();
+      try {
+        await client.query(`CREATE SCHEMA "${old}"`);
+        await client.query(`SET search_path TO "${old}"`);
+        for (const dir of dirs.slice(0, last)) await client.query(readFileSync(path.join(MIGRATIONS_DIR, dir, "migration.sql"), "utf8"));
+        await client.query(`INSERT INTO "ZernioEventReceipt" ("id", "workspaceId", "eventId", "event") VALUES ('r1', 'ws', 'e1', 'comment.received')`);
+        await client.query(readFileSync(path.join(MIGRATIONS_DIR, dirs[last], "migration.sql"), "utf8"));
+        const { rows } = await client.query(`SELECT "status" FROM "ZernioEventReceipt" WHERE "id" = 'r1'`);
+        expect(rows[0].status).toBe("ENQUEUED");
+        await client.query(`INSERT INTO "ZernioEventReceipt" ("id", "workspaceId", "eventId", "event") VALUES ('r2', 'ws', 'e2', 'comment.received')`);
+        expect((await client.query(`SELECT "status" FROM "ZernioEventReceipt" WHERE "id" = 'r2'`)).rows[0].status).toBe("CLAIMED");
+      } finally {
+        await client.query(`DROP SCHEMA IF EXISTS "${old}" CASCADE`);
+        await client.end();
+      }
+    });
   });
 });

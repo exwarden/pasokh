@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { Prisma } from '@/app/generated/prisma/client';
 import { prisma } from '@/lib/db/client';
 import { decryptToken } from '@/lib/meta/oauth';
 import {
@@ -8,6 +7,7 @@ import {
   resolveZernioEventId, verifyZernioSignature, zernioAccountSchema,
 } from '@/lib/zernio/normalize-event';
 import { processInstagramWebhook } from '@/lib/queue/process-webhook';
+import { claimZernioEvent, markZernioEventEnqueued, releaseZernioEvent } from '@/lib/zernio/receipt';
 
 const eventEnvelopeSchema = z.object({ id: z.string().min(1), event: z.string(), account: zernioAccountSchema });
 
@@ -37,15 +37,22 @@ export async function POST(request: Request, segmentData: { params: Promise<{ wo
     return NextResponse.json({ success: true, ignored: true });
   }
 
-  // At-least-once delivery with retries for about two days: claim the event id first, and give
-  // the claim back if processing fails so the retry is not mistaken for a duplicate.
+  // At-least-once delivery with retries for about two days. Claim the event id before any work;
+  // it becomes ENQUEUED when the jobs are in the queue. A duplicate of an ENQUEUED event is
+  // acknowledged, a duplicate of a fresh claim is told to come back (503), and a claim left by a
+  // process that died is taken over once it is stale. A failure gives the claim back.
   const eventId = resolveZernioEventId(parsed.data.id, headers.eventId);
+  let claim;
   try {
-    await prisma.zernioEventReceipt.create({ data: { workspaceId, eventId, event } });
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return NextResponse.json({ success: true, duplicate: true });
+    claim = await claimZernioEvent({ workspaceId, eventId, event });
+  } catch {
     return NextResponse.json({ error: 'Webhook processing failed; retry delivery.' }, { status: 500 });
   }
+  if (claim === 'duplicate') return NextResponse.json({ success: true, duplicate: true });
+  if (claim === 'in_flight') return NextResponse.json({ error: 'Event is being processed; retry delivery.' }, { status: 503, headers: { 'Retry-After': '30' } });
+
+  // If marking fails the claim stays CLAIMED and a later delivery redoes the (idempotent) work.
+  const settle = () => markZernioEventEnqueued({ workspaceId, eventId }).catch(() => undefined);
 
   try {
     if (event === 'message.sent') {
@@ -59,14 +66,19 @@ export async function POST(request: Request, segmentData: { params: Promise<{ wo
           update: data,
         });
       }
+      await settle();
       return NextResponse.json({ success: true });
     }
     const normalized = normalizeZernioEvent({ payload, account });
-    if (!normalized) return NextResponse.json({ success: true, ignored: true });
+    if (!normalized) {
+      await settle();
+      return NextResponse.json({ success: true, ignored: true });
+    }
     await processInstagramWebhook({ payload: normalized, provider: 'ZERNIO', workspaceId });
+    await settle();
     return NextResponse.json({ success: true });
   } catch {
-    await prisma.zernioEventReceipt.deleteMany({ where: { workspaceId, eventId } }).catch(() => undefined);
+    await releaseZernioEvent({ workspaceId, eventId }).catch(() => undefined);
     return NextResponse.json({ error: 'Webhook processing failed; retry delivery.' }, { status: 500 });
   }
 }
