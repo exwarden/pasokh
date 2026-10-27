@@ -449,6 +449,37 @@ model ZernioConnection {
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
+/// One row per Zernio webhook event already accepted for processing, keyed by the
+/// event id Zernio puts in the body (and in x-zernio-event-id). Zernio delivers
+/// at least once and retries for about 51 hours, so a redelivery must not run
+/// the automation twice. Pruned after ZERNIO_EVENT_RECEIPT_RETENTION_DAYS.
+model ZernioEventReceipt {
+  id          String   @id @default(cuid())
+  workspaceId String
+  eventId     String
+  event       String
+  createdAt   DateTime @default(now())
+
+  @@unique([workspaceId, eventId])
+  @@index([createdAt])
+}
+
+/// Outgoing messages Zernio reports with message.sent (typed by a person in the
+/// Instagram app or inbox, or sent by an automation). Metadata only: no text and
+/// no attachment URLs. Never read by the automation or AI paths.
+model ZernioSentMessage {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  platformMessageId String
+  sentVia           String?
+  hasAttachments    Boolean  @default(false)
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+
+  @@unique([workspaceId, platformMessageId])
+  @@index([createdAt])
+}
+
 // Claims persist independently of BullMQ retention so old taps never resend.
 model PostbackDelivery {
   id        String   @id

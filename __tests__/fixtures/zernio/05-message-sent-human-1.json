@@ -1,0 +1,52 @@
+{
+  "id": "00000000-0000-4000-8000-000000000005",
+  "event": "message.sent",
+  "message": {
+    "id": "fx_id_07_xxxxxxxxxxxxxxx",
+    "conversationId": "fx_conversation_01_xxxxx",
+    "platform": "instagram",
+    "platformMessageId": "fx_platformmessage_03_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "direction": "outgoing",
+    "text": "see you soon",
+    "attachments": [],
+    "sender": {
+      "id": "fx_id_08_xxxxxxxx",
+      "name": "shop_account",
+      "username": "shop_account",
+      "picture": "https://cdn.example.test/fixture/4"
+    },
+    "sentAt": "2026-10-27T13:44:14.678Z",
+    "isRead": true,
+    "sentVia": "human",
+    "automationId": null,
+    "workflowId": null,
+    "executionId": null,
+    "broadcastId": null,
+    "sequenceId": null
+  },
+  "conversation": {
+    "id": "fx_conversation_01_xxxxx",
+    "platformConversationId": "fx_id_02_xxxxxxx",
+    "participantId": "fx_id_02_xxxxxxx",
+    "participantName": "Fake Name 1",
+    "participantUsername": "customer_1",
+    "participantPicture": "https://cdn.example.test/fixture/5",
+    "status": "active",
+    "contactId": "fx_contact_01_xxxxxxxxxx"
+  },
+  "account": {
+    "id": "fx_id_03_xxxxxxxxxxxxxxx",
+    "platform": "instagram",
+    "username": "shop_account",
+    "displayName": "Shop Display Name",
+    "profileId": "fx_profile_01_xxxxxxxxxx",
+    "accountId": "fx_id_03_xxxxxxxxxxxxxxx"
+  },
+  "timestamp": "2026-10-27T13:44:14.703Z",
+  "profiles": [
+    {
+      "id": "fx_profile_01_xxxxxxxxxx",
+      "externalId": null
+    }
+  ]
+}

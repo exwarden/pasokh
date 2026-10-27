@@ -43,9 +43,9 @@ describe('Zernio event boundary', () => {
     const story = normalizeZernioEvent({ account, payload: { ...envelope, event: 'message.received', message: { platformMessageId: 'm2', direction: 'incoming', text: 'price?', sender: { id: 'person1' }, attachments: [] }, metadata: { storyReply: { storyId: 'st1', storyUrl: 'https://cdn.example/st1' } } } });
     expect(parseMessageEvents(story!)[0]).toMatchObject({ messageText: 'price?', storyId: 'st1' });
   });
-  it('recognises a story mention that Zernio reports as a "share" attachment', () => {
+  it('recognises a story mention that Zernio reports as a "share" attachment, without carrying its CDN URL', () => {
     const mention = normalizeZernioEvent({ account, payload: { ...envelope, event: 'message.received', message: { platformMessageId: 'm3', direction: 'incoming', text: null, sender: { id: 'person1' }, attachments: [{ type: 'share', originalType: 'story_mention', url: 'https://cdn.example/m' }] }, metadata: null } });
-    expect(parseMessageEvents(mention!)[0]).toMatchObject({ messageText: '', isStoryMention: true, attachments: [{ type: 'story_mention', url: 'https://cdn.example/m' }] });
+    expect(parseMessageEvents(mention!)[0]).toMatchObject({ messageText: '', isStoryMention: true, attachments: [{ type: 'story_mention' }] });
   });
   it('rejects malformed and unrelated events', () => {
     for (const payload of [null, {}, { ...envelope, event: 'post.published' }, { ...envelope, event: 'message.received', message: {} }]) {

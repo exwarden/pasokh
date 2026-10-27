@@ -33,7 +33,7 @@ const cutoffOf = (table: string) => {
 beforeEach(() => {
   db.calls.length = 0;
   for (const key of Object.keys(db.rows)) delete db.rows[key];
-  for (const t of ["webhookEvent", "dmLog", "operationalEvent", "aiReply"]) db.rows[t] = [{ id: `${t}1` }, { id: `${t}2` }];
+  for (const t of ["webhookEvent", "dmLog", "operationalEvent", "aiReply", "zernioEventReceipt", "zernioSentMessage"]) db.rows[t] = [{ id: `${t}1` }, { id: `${t}2` }];
 });
 
 describe("data retention", () => {
@@ -41,7 +41,8 @@ describe("data retention", () => {
     const deleted = await runRetention(NOW, {});
     expect(cutoffOf("webhookEvent").getTime()).toBe(NOW.getTime() - 90 * DAY);
     expect(cutoffOf("dmLog").getTime()).toBe(NOW.getTime() - 180 * DAY);
-    expect(deleted).toEqual({ webhookEvent: 2, dmLog: 2, operationalEvent: 2, aiReply: 2 });
+    expect(cutoffOf("zernioEventReceipt").getTime()).toBe(NOW.getTime() - 7 * DAY);
+    expect(deleted).toEqual({ webhookEvent: 2, dmLog: 2, operationalEvent: 2, aiReply: 2, zernioEventReceipt: 2, zernioSentMessage: 2 });
   });
 
   it("follows the periods set in the environment, and 0 keeps a table for ever", async () => {
