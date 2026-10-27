@@ -25,5 +25,15 @@ Nothing here is done; each entry says where it belongs.
   knowledge bases, measure how many answers are held back (the `HANDOFF` rate) and adjust the patterns so a legitimate
   answer is not turned into a handoff while an invented price still is.
 - **Hide manager-only buttons from MEMBER** in the dashboard UI (the API already refuses them).
+- **Close the race in the comment cooldown and cap public replies.** The cooldown check
+  (`lib/automation/comment-cooldown.ts`) reads `DmLog` and then sends, so two workers handling two comments from one
+  person at the same moment can both pass. Claim the (campaign, person) slot atomically before sending, with Redis
+  `SET key NX PX <cooldown>` (release it if the send is a confirmed rejection). Also cap public comment replies per
+  person per campaign: they are still posted for every comment.
 - **Comment cooldown per campaign in the UI.** `COMMENT_DM_COOLDOWN_HOURS` is a global environment setting; a
   per-campaign field would need a migration and form changes.
+
+## Phase 6: go-live checklist additions
+
+- Run `npx tsx scripts/smoke-safe-fetch.ts` on the VPS outside Iran. The local network has no AAAA resolution, so the
+  IPv6-only case of the custom `lookup` (`lib/net/safe-fetch.ts`) has never been exercised; it must report PASS there.
