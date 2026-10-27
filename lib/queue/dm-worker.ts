@@ -67,7 +67,7 @@ import { ZernioApiError } from "@/lib/zernio/client";
 import { runSequenceStep } from "@/lib/sequences/engine";
 import { handleFormMessage } from "@/lib/forms/engine";
 import { answerWithAi } from "@/lib/ai/assistant";
-import { checkSender } from "@/lib/automation/sender-guard";
+import { checkAutoReplyCap, checkLoop } from "@/lib/automation/sender-guard";
 import { recordEvent } from "@/lib/ops/events";
 import { processSmsBatch } from "@/lib/sms/campaigns";
 
@@ -1158,6 +1158,17 @@ async function runCampaignCommand({
 async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
 
+  // A button tap is as fast as the sender makes it: a bot tapping buttons in a
+  // loop is paused like one sending text. Taps are never counted toward the
+  // hourly cap (the button belongs to a conversation we began).
+  if (!fallback) {
+    const loop = await checkLoop({ instagramId: instagramAccountId, senderId: userId, messageId: `tap:${job.data.mid ?? job.id}` });
+    if (loop !== "allow") {
+      console.warn(`[DM Worker] Not answering ${userId} automatically: ${loop}`);
+      return;
+    }
+  }
+
   // A tap is a message from them and opens the 24-hour window; a read
   // fallback is not.
   if (!fallback) {
@@ -1589,15 +1600,20 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
-  // Our own messages come back as echoes. The webhook parsers drop them; this
-  // is the second lock: an account never answers itself.
+  // Our own messages come back as echoes. The webhook parsers drop them by
+  // their echo flag (Meta `is_echo`, Zernio `direction: outgoing`), which does
+  // not depend on any id. This comparison is only a second lock: it holds when
+  // the webhook's account id and the stored `instagramId` (the OAuth `user_id`)
+  // are the same id space, which has not been checked against a live Meta
+  // connection.
   if (senderId === instagramAccountId) return;
 
-  // Automatic replies to one sender are capped, and a sender who sends messages
-  // faster than a person can (another auto-responder) is paused for an hour.
-  const verdict = await checkSender({ instagramId: instagramAccountId, senderId, messageId });
-  if (verdict !== "allow") {
-    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${verdict}`);
+  // A sender who sends messages faster than a person can (another
+  // auto-responder) is paused for an hour, whatever they are in the middle of.
+  // The hourly cap comes later, and only for what starts a reply.
+  const loop = await checkLoop({ instagramId: instagramAccountId, senderId, messageId });
+  if (loop !== "allow") {
+    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${loop}`);
     return;
   }
 
@@ -1687,6 +1703,15 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       await releaseCommentAnswer(resumed.id);
       throw error;
     }
+    return;
+  }
+
+  // From here on the message starts an automatic reply, so it counts toward
+  // the sender's hourly cap. Form answers, menu taps and the answer to a
+  // comment-reply prompt returned above and are never counted.
+  const cap = await checkAutoReplyCap({ instagramId: instagramAccountId, senderId, messageId });
+  if (cap !== "allow") {
+    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${cap}`);
     return;
   }
 

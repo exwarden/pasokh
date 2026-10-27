@@ -123,6 +123,12 @@ vi.mock("@/lib/billing/usage", () => ({
   releaseWorkspaceDMReservation: mockReleaseWorkspaceDMReservation,
 }));
 
+// Sender limits need Redis and are tested in sender-guard*.test.ts; here every sender is allowed.
+vi.mock("@/lib/automation/sender-guard", () => ({
+  checkLoop: async () => "allow",
+  checkAutoReplyCap: async () => "allow",
+}));
+
 vi.mock("@/lib/ops/worker-health", () => ({
   recordWorkerAlert: vi.fn(),
 }));

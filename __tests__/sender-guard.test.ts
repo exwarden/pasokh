@@ -34,7 +34,7 @@ const r = vi.hoisted(() => {
 vi.mock("@/lib/queue/client", () => ({ getRedisConnection: () => r.redis }));
 vi.mock("@/lib/ops/events", () => ({ recordEvent: async (e: unknown) => void r.events.push(e) }));
 
-import { checkSender, senderLimits } from "../lib/automation/sender-guard";
+import { checkAutoReplyCap, checkLoop, checkSender, senderLimits } from "../lib/automation/sender-guard";
 
 let n = 0;
 const send = (sender = "s1") => checkSender({ instagramId: "ig", senderId: sender, messageId: `m${++n}` });
@@ -95,5 +95,55 @@ describe("automatic replies to one sender", () => {
   it("reads limits from the environment and ignores nonsense", () => {
     expect(senderLimits({})).toEqual({ perHour: 20, loopPerMinute: 10 });
     expect(senderLimits({ AUTO_REPLIES_PER_SENDER_PER_HOUR: "5", LOOP_MESSAGES_PER_MINUTE: "x" })).toEqual({ perHour: 5, loopPerMinute: 10 });
+  });
+});
+
+describe("the two limits are separate", () => {
+  const args = (i: number, sender = "s9") => ({ instagramId: "ig", senderId: sender, messageId: `sep${i}` });
+
+  it("the loop check alone never counts toward the hourly cap", async () => {
+    process.env.AUTO_REPLIES_PER_SENDER_PER_HOUR = "2";
+    process.env.LOOP_MESSAGES_PER_MINUTE = "1000";
+    for (let i = 0; i < 30; i++) expect(await checkLoop(args(i))).toBe("allow");
+    expect(await checkAutoReplyCap(args(100))).toBe("allow");
+  });
+
+  it("the cap check alone never trips the loop pause", async () => {
+    process.env.AUTO_REPLIES_PER_SENDER_PER_HOUR = "1000";
+    for (let i = 0; i < 30; i++) expect(await checkAutoReplyCap(args(i, "s10"))).toBe("allow");
+    expect(await checkLoop(args(200, "s10"))).toBe("allow");
+  });
+
+  it("each counts a retried job once", async () => {
+    process.env.AUTO_REPLIES_PER_SENDER_PER_HOUR = "2";
+    for (let i = 0; i < 6; i++) expect(await checkAutoReplyCap({ instagramId: "ig", senderId: "s11", messageId: "same2" })).toBe("allow");
+  });
+});
+
+describe("when Redis cannot be reached", () => {
+  it("lets the message through and leaves a visible event", async () => {
+    const original = r.redis.get;
+    r.redis.get = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+    try {
+      expect(await checkLoop({ instagramId: "ig", senderId: "s12", messageId: "down1" })).toBe("allow");
+      expect(await checkAutoReplyCap({ instagramId: "ig", senderId: "s12", messageId: "down1" })).toBe("allow");
+    } finally {
+      r.redis.get = original;
+    }
+    expect(r.events.length).toBeGreaterThanOrEqual(1);
+    expect(r.events[0]).toMatchObject({ level: "WARNING", message: "Sender limits could not be checked" });
+  });
+
+  it("does the same when Redis is too slow", async () => {
+    const original = r.redis.get;
+    r.redis.get = () => new Promise(() => {});
+    try {
+      expect(await checkLoop({ instagramId: "ig", senderId: "s13", messageId: "slow1" })).toBe("allow");
+    } finally {
+      r.redis.get = original;
+    }
+    expect(r.events[0]).toMatchObject({ message: "Sender limits could not be checked" });
   });
 });
