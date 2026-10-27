@@ -1,0 +1,66 @@
+{
+  "id": "00000000-0000-4000-8000-000000000002",
+  "event": "message.received",
+  "message": {
+    "id": "fx_id_04_xxxxxxxxxxxxxxx",
+    "conversationId": "fx_conversation_01_xxxxx",
+    "platform": "instagram",
+    "platformMessageId": "fx_platformmessage_02_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "direction": "incoming",
+    "text": null,
+    "attachments": [
+      {
+        "type": "image",
+        "url": "https://cdn.example.test/fixture/2",
+        "payload": {
+          "url": "https://cdn.example.test/fixture/2"
+        }
+      }
+    ],
+    "sender": {
+      "id": "fx_id_02_xxxxxxx",
+      "name": "Fake Name 1",
+      "username": "customer_1",
+      "instagramProfile": {
+        "isFollower": true,
+        "isFollowing": false,
+        "followerCount": 10,
+        "isVerified": false
+      },
+      "contactId": "fx_contact_01_xxxxxxxxxx"
+    },
+    "sentAt": "2026-10-27T13:42:25.370Z",
+    "isRead": false,
+    "sentVia": null,
+    "automationId": null,
+    "workflowId": null,
+    "executionId": null,
+    "broadcastId": null,
+    "sequenceId": null
+  },
+  "conversation": {
+    "id": "fx_conversation_01_xxxxx",
+    "platformConversationId": "fx_id_02_xxxxxxx",
+    "participantId": "fx_id_02_xxxxxxx",
+    "participantName": "Fake Name 1",
+    "participantUsername": "customer_1",
+    "participantPicture": "https://cdn.example.test/fixture/3",
+    "status": "active",
+    "contactId": "fx_contact_01_xxxxxxxxxx"
+  },
+  "account": {
+    "id": "fx_id_03_xxxxxxxxxxxxxxx",
+    "platform": "instagram",
+    "username": "shop_account",
+    "displayName": "Shop Display Name",
+    "profileId": "fx_profile_01_xxxxxxxxxx",
+    "accountId": "fx_id_03_xxxxxxxxxxxxxxx"
+  },
+  "timestamp": "2026-10-27T13:42:27.680Z",
+  "profiles": [
+    {
+      "id": "fx_profile_01_xxxxxxxxxx",
+      "externalId": null
+    }
+  ]
+}

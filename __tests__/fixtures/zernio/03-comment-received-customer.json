@@ -1,0 +1,45 @@
+{
+  "id": "00000000-0000-4000-8000-000000000003",
+  "event": "comment.received",
+  "comment": {
+    "id": "fx_id_05_xxxxxxxx",
+    "postId": null,
+    "platformPostId": "fx_platformpost_0",
+    "platform": "instagram",
+    "text": "how",
+    "author": {
+      "id": "fx_id_02_xxxxxxx",
+      "username": "customer_1",
+      "isOwnAccount": false,
+      "instagramProfile": {
+        "isFollower": true,
+        "isFollowing": false,
+        "followerCount": 10,
+        "isVerified": false
+      }
+    },
+    "createdAt": "2026-10-27T13:42:53.981Z",
+    "isReply": false,
+    "parentCommentId": null
+  },
+  "post": {
+    "id": null,
+    "platformPostId": "fx_platformpost_0",
+    "content": null,
+    "imageUrl": null,
+    "permalink": null
+  },
+  "account": {
+    "id": "fx_id_03_xxxxxxxxxxxxxxx",
+    "accountId": "fx_id_03_xxxxxxxxxxxxxxx",
+    "platform": "instagram",
+    "username": "shop_account"
+  },
+  "timestamp": "2026-10-27T13:42:53.982Z",
+  "profiles": [
+    {
+      "id": "fx_profile_01_xxxxxxxxxx",
+      "externalId": null
+    }
+  ]
+}
