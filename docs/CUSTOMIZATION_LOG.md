@@ -152,3 +152,10 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
   untagged-by-release image from that merge (no CI gate, no scan). Do not deploy from it.
 - PR #2 (`fix/phase2-security`) merged into `main` at 2026-10-27T08:39:44Z, merge commit
   `2221ae9e515522725a101b32727793ebd6dd4486`. CI on the PR (run 40474024044) passed. Nothing was merged into `upstream`.
+
+### Phase 3 decision (2026-10-27)
+
+- Meta direct is set aside: a Meta Developer account cannot be created from Iran. The connection runs through Zernio.
+  `CLAUDE.md` (parent folder, outside this repository) was updated: rule 1, Phase 3, and a "Decision" section.
+- Added `docs/PHASE3_ZERNIO.fa.md` (documentation findings, terms of use, Zernio path in the code, risks, message budget
+  design, estimates) and `docs/ZERNIO_ONBOARDING.fa.md` (checklist). `docs/BACKLOG.md` updated. No code changed.

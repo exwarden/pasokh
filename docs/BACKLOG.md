@@ -3,17 +3,27 @@
 Items found while working on Phases 2 to 2c that were deliberately not changed.
 Nothing here is done; each entry says where it belongs.
 
-## Phase 3: to verify against a real Meta connection
+## Phase 3: to verify on a real Zernio connection (plan: `docs/PHASE3_ZERNIO.fa.md`)
 
-- **Same ID space for the stored `instagramId` and the webhook `entry.id`.** Automations and accounts are looked up by
-  `instagramAccount.instagramId` using the `entry.id` of the incoming webhook (`lib/queue/process-webhook.ts`,
-  `lib/queue/dm-worker.ts`, `sender-guard`, `isOwnComment`). Confirm that the ID saved at OAuth time (Instagram
-  Login user id) is the same value Meta sends as `entry.id`, and the same one that appears as `sender.id` on echoes. If
-  they differ (Instagram-scoped vs app-scoped, or the Facebook Login page-linked id), events are dropped or loop
-  protection misses the account's own messages.
-- **Graph access token from the query string to the `Authorization` header.** The token currently travels as
-  `access_token=` in the URL of Graph calls, where proxies and error messages can capture it. Needs a live connection to
-  verify every endpoint (messages, comments, private replies, follow status, refresh) accepts the header.
+Decision 2026-10-27: the Instagram connection runs through Zernio; direct Meta is set aside (Meta for Developers is
+not available from Iran). Checklist: `docs/ZERNIO_ONBOARDING.fa.md`.
+
+- **Gate 1: does the free plan include Inbox?** `lib/zernio/route-handler.ts` maps HTTP 402 to "needs Inbox access".
+  Not confirmed in the docs; if Inbox is paid, the Zernio path is not usable without a card.
+- **Gate 2: webhook account field.** The docs say account events carry `account.accountId`; `normalize-event.ts` and
+  the webhook route read `account.id` and drop anything else as `ignored`. Check against a real payload.
+- **Gate 3: message metering.** Whether a private reply counts, the real behavior at 10,000 (403
+  `message_allowance_exceeded` was not found in the readable docs), and whether `GET /v1/usage` exposes a message
+  count.
+- **Message budget control** (design in section 6 of the plan): team-wide UTC-month counter at `postZernioMessage`,
+  P0/P1/P2 priorities with stops at 9,500 and 10,000, 403 circuit breaker, soft quota per workspace, a monthly AI
+  budget (`AI_MAX_REPLIES_PER_DAY=300` alone is up to 9,000 messages a month). `lib/billing/usage.ts` counts only some
+  send paths and uses server-local months, so it cannot be reused as is.
+- **Zernio webhook hygiene:** dedupe on `X-Zernio-Event-Id` before queueing, answer within 5 s, alert when no event
+  arrives for hours, no secret rotation yet.
+- **Not read:** Zernio subprocessors page, DPA, "Payment method required" page, inbox webhook payload pages, OpenAPI.
+- **Direct-Meta only, lower priority now:** same ID space for the stored `instagramId` and the webhook `entry.id`;
+  Graph access token from the query string to the `Authorization` header.
 
 ## Phase 4 / 5: product and hardening
 
