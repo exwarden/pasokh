@@ -75,8 +75,8 @@ export const authConfig = {
   callbacks: {
     // For magic links this runs before the link is sent, so a blocked address
     // never receives one, and again when the link is verified.
-    async signIn({ user }) {
-      return isEmailAllowedToSignIn(user?.email);
+    async signIn({ user, account }) {
+      return isEmailAllowedToSignIn(user?.email, { viaEmailLink: account?.type === "email" });
     },
     async jwt({ token, user }) {
       if (user?.id) {

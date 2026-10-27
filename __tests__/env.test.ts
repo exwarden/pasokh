@@ -60,3 +60,22 @@ describe("sign-in allowlist", () => {
     expect(isEmailAllowedToSignIn("")).toBe(false);
   });
 });
+
+describe("sign-in by emailed link", () => {
+  it("is refused for everyone while ALLOWED_EMAILS is empty: a link would otherwise create an account for any address", () => {
+    vi.stubEnv("EMAIL_SERVER", "smtp://user:pass@mail.example.com:587");
+    expect(isEmailAllowedToSignIn("stranger@example.com", { viaEmailLink: true })).toBe(false);
+    vi.stubEnv("ALLOWED_EMAILS", " , ");
+    expect(isEmailAllowedToSignIn("stranger@example.com", { viaEmailLink: true })).toBe(false);
+  });
+
+  it("follows the list once it is set", () => {
+    vi.stubEnv("ALLOWED_EMAILS", "owner@example.com");
+    expect(isEmailAllowedToSignIn("owner@example.com", { viaEmailLink: true })).toBe(true);
+    expect(isEmailAllowedToSignIn("stranger@example.com", { viaEmailLink: true })).toBe(false);
+  });
+
+  it("does not change password sign-in, which only works for accounts that already exist", () => {
+    expect(isEmailAllowedToSignIn("anyone@example.com")).toBe(true);
+  });
+});

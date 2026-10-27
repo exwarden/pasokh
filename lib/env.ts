@@ -83,18 +83,22 @@ export function getMetaGraphApiVersion(): string {
  * A self-hosted instance on a public domain is open to signup: the email
  * provider creates an account for whoever asks for a magic link, and that
  * account gets its own workspace. ALLOWED_EMAILS closes it to a comma-separated
- * list of addresses. Left unset, sign-in behaves exactly as before, so an
- * existing deployment is unaffected.
+ * list of addresses. Left unset, password sign-in behaves as before, but
+ * sign-in by emailed link is refused (see below).
  */
 export function isEmailAllowedToSignIn(
-  email: string | null | undefined
+  email: string | null | undefined,
+  { viaEmailLink = false }: { viaEmailLink?: boolean } = {}
 ): boolean {
   const allowed = (process.env.ALLOWED_EMAILS ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
 
-  if (allowed.length === 0) return true;
+  // An emailed link creates the account if the address is new, so with no
+  // list it would let anyone in. That sign-in fails closed; passwords only
+  // work for accounts that already exist, so they keep the old behaviour.
+  if (allowed.length === 0) return !viaEmailLink;
   if (!email) return false;
   return allowed.includes(email.toLowerCase());
 }
