@@ -94,3 +94,29 @@ Branch `fix/phase2-security` (both it and `chore/phase0-setup` pushed to `exward
 
 Upstream files touched in 2b: `lib/queue/dm-worker.ts` (two call sites and the failure recorder), `lib/utils/rate-limiter.ts`,
 `lib/users/{login-throttle,accounts}.ts`, `lib/auth.ts`, `app/login/page.tsx`, `app/setup/page.tsx`, `.github/workflows/*`.
+
+## Phase 2c: fixes from the independent review (2026-10-27)
+
+Branch `fix/phase2-security`; each item is one commit, written test-first (the test failed before the fix).
+
+- Items 1, 9: `lib/workspace-members.ts` `grantWorkspaceRole` is the only way a membership is created or changed by invite,
+  add-member and accept; the role update is `updateMany ... role <> OWNER`, so an OWNER is never touched.
+- Item 4: a changed phone number (contact API, form `saveTo`) clears `smsConsent`, `smsConsentAt`, `smsConsentSource`. An admin
+  may record consent for the new number in the same request. `lib/forms/engine.ts` gained `saveAnswerToContact`.
+- Item 3: `/api/ai` PUT refuses a stored key when provider or base URL changes and no new key is sent.
+- Item 2: `reserveLoginAttempt` (INCR per key in one MULTI, before `verifyPassword`) replaces `isLoginThrottled` +
+  `recordLoginFailure`; success clears the email counters and gives the address its slot back. Setup counts every attempt
+  (not only wrong tokens), so five form mistakes in 15 minutes lock `/setup` for the window.
+- Item 5: `lib/ai/guard.ts` also holds back amounts in Persian words, capacity/stock phrases and bare domains (`shop.ir`,
+  `t.me/x`); the evidence is now persona + knowledge only (customer text and earlier turns no longer count).
+- Items 6, 12: `.env.example` and `docs/DEPLOYMENT.fa.md` mark `TRUSTED_PROXY`, `PASOKH_BIND=127.0.0.1`, `SETUP_TOKEN`
+  (`openssl rand -hex 32`) as required; sign-in by emailed link is refused while `ALLOWED_EMAILS` is empty.
+- Item 10: `proxy.ts` guards every folder of `app/(dashboard)` except `/reports` (public share links live under it).
+- Item 11: `processSmsBatch` stops a campaign whose provider differs from the one in the current SMS settings.
+- Item 9 (tests): `member-permissions.test.ts` reads the route list from disk, fails on a route or method outside the matrix,
+  pins exact statuses, and checks every query carries the workspace id.
+
+Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts`, `lib/workspace.ts`,
+`app/api/contacts/[id]/route.ts`, `lib/forms/engine.ts`, `app/api/ai/route.ts`, `lib/users/{login-throttle,accounts}.ts`,
+`app/setup/page.tsx`, `lib/ai/{guard,assistant}.ts`, `lib/env.ts`, `lib/auth.ts`, `proxy.ts`, `lib/sms/campaigns.ts`.
+
