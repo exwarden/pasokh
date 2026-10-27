@@ -221,3 +221,19 @@ Branch `feat/zernio-ingestion-hardening` (stacked on `feat/zernio-ingestion-fixe
 - Known limits recorded: DMs have no reconciler safety net (only comments do), and the comment reconciler depends on
   `automation.postId` being the Instagram media id (`docs/ZERNIO_INGESTION.fa.md`).
 
+### AI reply delivery hardening (2026-10-27)
+
+Branch `feat/ai-reply-delivery-hardening`. Migration `20261027170000_ai_reply_claim` (`AiReply.claimedAt`, `AiReply.attempts`).
+Upstream-derived files touched: `lib/ai/assistant.ts`, `.env.example`, `__tests__/ai-allowed-facts.test.ts` (mock only).
+
+- `SENDING` state: the reply moves PENDING -> SENDING atomically right before `sendOutboundMessage`. A retry that finds
+  SENDING marks the row `UNCONFIRMED` (existing status, shown in the assistant's recent replies) and records the warning
+  event "The AI assistant could not confirm a reply"; it never sends again. A rate-limited send is put back to PENDING.
+- A PENDING reply with no stored answer older than `AI_PENDING_STALE_MINUTES` (5) is taken over with an atomic
+  `updateMany`; a fresh one is left alone.
+- The daily limits now sum `AiReply.attempts` instead of counting rows: a takeover that calls the model again counts, a
+  takeover is refused (row marked FAILED, outcome LIMIT) when that call would pass a limit, and sending a stored answer
+  costs nothing.
+- Known limit: a live second job that reads a row in SENDING marks it UNCONFIRMED; the first job's final update then
+  overwrites it with the real outcome, so only a spurious warning event is possible.
+
