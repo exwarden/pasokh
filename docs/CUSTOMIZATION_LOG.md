@@ -132,3 +132,16 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
   now with an event "Sender limits could not be checked".
 - `vitest.config.ts`: `hookTimeout` 120 s (database tests build a schema in `beforeAll`).
 
+
+### Phase 2d (2026-10-27)
+
+- `scripts/smoke-safe-fetch.ts` (`npx tsx scripts/smoke-safe-fetch.ts`): `postJson` with the custom `all: true` lookup,
+  no mocks, on Node 24.19. Dual-stack (`example.com`) and IPv4-only hosts connect over TLS; a name resolving to 127.0.0.1
+  is refused. The IPv6-only case could not be checked: the local resolver returns no AAAA records at all, even for
+  `ipv6.google.com`, so the script reports it as UNREACHABLE, not as a pass.
+- Comment path: a person commenting the keyword N times got N DMs (dedupe was per campaign and comment only). Now one DM
+  per campaign and person per `COMMENT_DM_COOLDOWN_HOURS` (default 24, 0 = off), logged as `SKIPPED_DEDUP`. New file
+  `lib/automation/comment-cooldown.ts`; upstream file touched: `lib/queue/dm-worker.ts` (one block before the plan-limit
+  check). Migration `20261027090000_dmlog_commenter_index` adds `DmLog(automationId, commenterId)`. The public comment
+  reply is still posted per comment. Two comments handled at the same moment by two workers can both pass the check.
+- `docs/BACKLOG.md` lists the unverified Phase 3 items and the Phase 4/5 backlog.
