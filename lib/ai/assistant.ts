@@ -15,6 +15,13 @@ const MEMORY_TURNS = 6;
 /** Most AI replies one workspace can use in 24 hours, whoever asks (AI_MAX_REPLIES_PER_DAY). */
 const DEFAULT_WORKSPACE_DAILY_REPLIES = 300;
 const HANDOFF_PREFIX = "Handoff: ";
+/** A PENDING reply with no stored answer is taken over by a retry after this long (AI_PENDING_STALE_MINUTES). */
+const DEFAULT_PENDING_STALE_MINUTES = 5;
+
+export function pendingStaleMs(env: Record<string, string | undefined> = process.env): number {
+  const minutes = Number(env.AI_PENDING_STALE_MINUTES);
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_PENDING_STALE_MINUTES) * 60_000;
+}
 
 function workspaceDailyLimit(): number {
   const n = Number(process.env.AI_MAX_REPLIES_PER_DAY);
@@ -83,6 +90,18 @@ export async function answerWithAi({
   let reply = await prisma.aiReply.findUnique({
     where: { assistantId_triggerId: { assistantId: assistant.id, triggerId: messageId } },
   });
+
+  // Every attempt counts, not only the ones that reached Instagram: a model
+  // call is paid for whether or not the reply was delivered.
+  const since = new Date(Date.now() - DAY_MS);
+  const usage = async () => {
+    const [byPerson, inWorkspace] = await Promise.all([
+      prisma.aiReply.aggregate({ _sum: { attempts: true }, where: { assistantId: assistant.id, igsid, createdAt: { gte: since } } }),
+      prisma.aiReply.aggregate({ _sum: { attempts: true }, where: { assistant: { instagramAccount: { workspaceId } }, createdAt: { gte: since } } }),
+    ]);
+    return { byPerson: byPerson._sum.attempts ?? 0, inWorkspace: inWorkspace._sum.attempts ?? 0 };
+  };
+
   if (reply?.status === "SENDING") {
     // The process stopped after handing the answer to Instagram and before it
     // recorded the outcome. The message may have been delivered: never send again.
@@ -93,18 +112,35 @@ export async function answerWithAi({
     }
     return "UNCONFIRMED";
   }
-  if (reply && !(reply.status === "PENDING" && reply.answer)) return "DUPLICATE";
+
+  if (reply && reply.status === "PENDING" && !reply.answer) {
+    // Claimed but never answered: either another job is calling the model right
+    // now, or the process that claimed it died. Only the second is taken over.
+    const staleBefore = new Date(Date.now() - pendingStaleMs());
+    if (reply.claimedAt >= staleBefore) return "DUPLICATE";
+    const used = await usage();
+    if (used.byPerson >= assistant.dailyLimitPerPerson || used.inWorkspace >= workspaceDailyLimit()) {
+      // Another model call would go past a limit.
+      await prisma.aiReply.updateMany({
+        where: { id: reply.id, status: "PENDING", answer: null, claimedAt: { lt: staleBefore } },
+        data: { status: "FAILED", error: "The daily limit was reached before the stalled reply could be retried" },
+      });
+      return "LIMIT";
+    }
+    // Atomic: of any number of retries, exactly one changes the row.
+    const taken = await prisma.aiReply.updateMany({
+      where: { id: reply.id, status: "PENDING", answer: null, claimedAt: { lt: staleBefore } },
+      data: { claimedAt: new Date(), attempts: { increment: 1 } },
+    });
+    if (taken.count !== 1) return "DUPLICATE";
+  } else if (reply && !(reply.status === "PENDING" && reply.answer)) {
+    return "DUPLICATE";
+  }
 
   if (!reply) {
-    const since = new Date(Date.now() - DAY_MS);
-    // Every attempt counts, not only the ones that reached Instagram: a model
-    // call is paid for whether or not the reply was delivered.
-    const [attemptsByPerson, attemptsInWorkspace] = await Promise.all([
-      prisma.aiReply.count({ where: { assistantId: assistant.id, igsid, createdAt: { gte: since } } }),
-      prisma.aiReply.count({ where: { assistant: { instagramAccount: { workspaceId } }, createdAt: { gte: since } } }),
-    ]);
-    if (attemptsByPerson >= assistant.dailyLimitPerPerson) return "LIMIT";
-    if (attemptsInWorkspace >= workspaceDailyLimit()) {
+    const used = await usage();
+    if (used.byPerson >= assistant.dailyLimitPerPerson) return "LIMIT";
+    if (used.inWorkspace >= workspaceDailyLimit()) {
       // Once a day is enough to be noticed.
       const already = await prisma.operationalEvent.findFirst({
         where: { workspaceId, message: "The AI assistant reached its daily limit", createdAt: { gte: since } },

@@ -105,12 +105,14 @@ describe.skipIf(!DATABASE_URL)("AI reply delivery on a real Postgres", () => {
     expect(m.send).toHaveBeenCalledTimes(1);
     expect(await row()).toMatchObject({ status: "SENT", answer: ANSWER, attempts: 1 });
   });
+
   it("a redelivery of a finished reply does nothing", async () => {
     await ask();
     expect(await ask()).toBe("DUPLICATE");
     expect(m.complete).toHaveBeenCalledTimes(1);
     expect(m.send).toHaveBeenCalledTimes(1);
   });
+
   it("the process dying after the send leaves SENDING, and the retry marks it UNCONFIRMED without sending again", async () => {
     const real = m.db.aiReply.update.bind(m.db.aiReply);
     // The send goes out, then the process "dies" before the outcome is recorded.
@@ -133,6 +135,7 @@ describe.skipIf(!DATABASE_URL)("AI reply delivery on a real Postgres", () => {
     expect(await ask()).toBe("DUPLICATE");
     expect(m.send).toHaveBeenCalledTimes(1);
   });
+
   it("Instagram asking us to wait puts the stored answer back, and the retry sends it without a second model call", async () => {
     m.send.mockRejectedValueOnce(new m.RateLimitError("slow down"));
     await expect(ask()).rejects.toBeInstanceOf(m.RateLimitError);
@@ -141,6 +144,71 @@ describe.skipIf(!DATABASE_URL)("AI reply delivery on a real Postgres", () => {
     expect(m.complete).toHaveBeenCalledTimes(1);
     expect(m.send).toHaveBeenCalledTimes(2);
   });
+
+  it("a PENDING reply without an answer, older than the limit, is taken over and answered", async () => {
+    await seed({ claimedAgoMs: 10 * 60_000 });
+    expect(await ask()).toBe("SENT");
+    expect(m.complete).toHaveBeenCalledTimes(1);
+    expect(m.send).toHaveBeenCalledTimes(1);
+    expect(await m.db.aiReply.count()).toBe(1);
+    expect(await row()).toMatchObject({ status: "SENT", attempts: 2 });
+  });
+
+  it("a fresh PENDING reply (another job is calling the model) is left alone", async () => {
+    await seed({ claimedAgoMs: 20_000 });
+    expect(await ask()).toBe("DUPLICATE");
+    expect(m.complete).not.toHaveBeenCalled();
+    expect(m.send).not.toHaveBeenCalled();
+    expect((await row()).attempts).toBe(1);
+  });
+
+  it("the stale limit follows AI_PENDING_STALE_MINUTES", async () => {
+    await seed({ claimedAgoMs: 90_000 });
+    vi.stubEnv("AI_PENDING_STALE_MINUTES", "1");
+    try {
+      expect(await ask()).toBe("SENT");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("competing retries for one stale reply: exactly one calls the model and sends", async () => {
+    await seed({ claimedAgoMs: 10 * 60_000 });
+    const outcomes = await Promise.all([ask(), ask(), ask(), ask()]);
+    expect(m.complete).toHaveBeenCalledTimes(1);
+    expect(m.send).toHaveBeenCalledTimes(1);
+    expect(outcomes.filter((o) => o === "SENT")).toHaveLength(1);
+    expect(outcomes.filter((o) => o !== "SENT").every((o) => ["DUPLICATE", "UNCONFIRMED"].includes(o))).toBe(true);
+    expect((await row()).attempts).toBe(2);
+  });
+
+  it("a takeover is not counted as a second reply, only as a second model call", async () => {
+    await seed({ claimedAgoMs: 10 * 60_000 });
+    await ask();
+    const [{ _sum }, rows] = await Promise.all([
+      m.db.aiReply.aggregate({ _sum: { attempts: true } }),
+      m.db.aiReply.count(),
+    ]);
+    expect(rows).toBe(1);
+    expect(_sum.attempts).toBe(2);
+  });
+
+  it("a takeover that would go past the person's daily limit is not made", async () => {
+    await m.db.aiAssistant.update({ where: { id: assistantId }, data: { dailyLimitPerPerson: 1 } });
+    await seed({ claimedAgoMs: 10 * 60_000 });
+    expect(await ask()).toBe("LIMIT");
+    expect(m.complete).not.toHaveBeenCalled();
+    expect(m.send).not.toHaveBeenCalled();
+    expect(await row()).toMatchObject({ status: "FAILED", attempts: 1 });
+  });
+
+  it("the daily limit counts model calls, so a reply that took two calls uses two", async () => {
+    await m.db.aiAssistant.update({ where: { id: assistantId }, data: { dailyLimitPerPerson: 2 } });
+    await seed({ triggerId: "old", status: "SENT", answer: "a", attempts: 2 });
+    expect(await ask("fresh")).toBe("LIMIT");
+    expect(m.complete).not.toHaveBeenCalled();
+  });
+
   it("a PENDING reply that already has its answer is sent without calling the model", async () => {
     await seed({ answer: ANSWER, claimedAgoMs: 0 });
     expect(await ask()).toBe("SENT");
