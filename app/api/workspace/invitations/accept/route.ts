@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { grantWorkspaceRole } from "@/lib/workspace-members";
 import { hashInvitationToken, normalizeInvitationEmail } from "@/lib/workspace-invitations";
 
 export async function POST(request: NextRequest) {
@@ -50,26 +51,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  await prisma.$transaction([
-    prisma.workspaceMember.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: invitation.workspaceId,
-          userId: session.user.id,
-        },
-      },
-      create: {
-        workspaceId: invitation.workspaceId,
-        userId: session.user.id,
-        role: invitation.role,
-      },
-      update: { role: invitation.role },
-    }),
-    prisma.workspaceInvitation.update({
+  await prisma.$transaction(async (tx) => {
+    await grantWorkspaceRole(tx, invitation.workspaceId, session.user.id!, invitation.role);
+    await tx.workspaceInvitation.update({
       where: { id: invitation.id },
       data: { status: "ACCEPTED", acceptedAt: new Date() },
-    }),
-  ]);
+    });
+  });
 
   return NextResponse.json({
     success: true,

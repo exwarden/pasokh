@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
+import { grantWorkspaceRole } from "@/lib/workspace-members";
 import {
   buildInvitationUrl,
   generateInvitationToken,
@@ -124,22 +125,7 @@ export async function POST(request: NextRequest) {
   });
 
   if (existingUser) {
-    await prisma.workspaceMember.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: context.workspaceId,
-          userId: existingUser.id,
-        },
-      },
-      create: {
-        workspaceId: context.workspaceId,
-        userId: existingUser.id,
-        role: parsed.data.role,
-      },
-      update: {
-        role: parsed.data.role,
-      },
-    });
+    await grantWorkspaceRole(prisma, context.workspaceId, existingUser.id, parsed.data.role);
   } else {
     const token = generateInvitationToken();
     inviteUrl = buildInvitationUrl(token);
