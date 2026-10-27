@@ -175,6 +175,12 @@ export async function processSmsBatch(campaignId: string, round = 0): Promise<"S
     await stop(campaignId, "The SMS provider settings were removed");
     return "STOPPED";
   }
+  // The checks at creation (test mode, daily cap, repeat guard) were made for
+  // this provider, and the stored key belongs to the one in the settings now.
+  if (config.provider !== campaign.provider) {
+    await stop(campaignId, "The SMS provider was changed after this send was created");
+    return "STOPPED";
+  }
 
   // Each run claims under its own id and then reads back only what it got:
   // Postgres re-checks `status = PENDING` under the row lock, so overlapping
