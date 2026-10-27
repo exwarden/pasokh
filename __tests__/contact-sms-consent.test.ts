@@ -39,3 +39,35 @@ describe("recording SMS consent by hand", () => {
     expect(mockPrisma.contact.update.mock.calls[0][0].data).toMatchObject({ smsConsent: true, smsConsentSource: "manual:u1", smsConsentAt: expect.any(Date) });
   });
 });
+
+describe("changing the phone number takes back the SMS consent", () => {
+  const asAdmin = () => mockPrisma.workspaceMember.findFirst.mockResolvedValue({ workspaceId: "w1", role: "ADMIN", workspace: {} });
+
+  it("a new number resets consent, its time and its source", async () => {
+    asAdmin();
+    mockPrisma.contact.findFirst.mockResolvedValue({ id: "c1", phone: "09121111111", smsConsent: true });
+    expect((await patch({ phone: "09122222222" })).status).toBe(200);
+    expect(mockPrisma.contact.update.mock.calls[0][0].data).toMatchObject({ phone: "09122222222", smsConsent: false, smsConsentAt: null, smsConsentSource: null });
+  });
+
+  it("a member changing the number also resets it", async () => {
+    mockPrisma.workspaceMember.findFirst.mockResolvedValue({ workspaceId: "w1", role: "MEMBER", workspace: {} });
+    mockPrisma.contact.findFirst.mockResolvedValue({ id: "c1", phone: "09121111111", smsConsent: true });
+    expect((await patch({ phone: "09122222222" })).status).toBe(200);
+    expect(mockPrisma.contact.update.mock.calls[0][0].data).toMatchObject({ smsConsent: false });
+  });
+
+  it("the same number written another way keeps the consent", async () => {
+    asAdmin();
+    mockPrisma.contact.findFirst.mockResolvedValue({ id: "c1", phone: "09121111111", smsConsent: true });
+    await patch({ phone: "۰۹۱۲۱۱۱۱۱۱۱" });
+    expect(mockPrisma.contact.update.mock.calls[0][0].data).not.toHaveProperty("smsConsent");
+  });
+
+  it("an admin recording consent for the new number in the same request keeps it", async () => {
+    asAdmin();
+    mockPrisma.contact.findFirst.mockResolvedValue({ id: "c1", phone: "09121111111", smsConsent: true });
+    await patch({ phone: "09122222222", smsConsent: true });
+    expect(mockPrisma.contact.update.mock.calls[0][0].data).toMatchObject({ smsConsent: true, smsConsentSource: "manual:u1" });
+  });
+});

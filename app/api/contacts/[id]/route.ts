@@ -15,6 +15,11 @@ const patchSchema = z.object({
   smsConsent: z.boolean().optional(),
 });
 
+function phoneChanged(next: string | null | undefined, current: string | null) {
+  if (next === undefined) return false;
+  return (next ? normalizePhone(next) : null) !== (current ?? null);
+}
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -26,7 +31,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const { tags, name, phone, email, smsConsent } = parsed.data;
   // Recording consent decides who gets SMS, so it is not a member's call.
-  if (smsConsent !== undefined && smsConsent !== contact.smsConsent && !canManageWorkspace(context.role)) {
+  const consentChange = smsConsent !== undefined && (smsConsent !== contact.smsConsent || phoneChanged(phone, contact.phone));
+  if (consentChange && !canManageWorkspace(context.role)) {
     return NextResponse.json({ error: "Only owners and admins can change this" }, { status: 403 });
   }
   // Stored in the same form a form answer is, so search and SMS see one format.
@@ -35,6 +41,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const cleanEmail = email ? normalizeEmail(email) : email;
   if (email && !cleanEmail) return NextResponse.json({ error: "That does not look like an email address." }, { status: 400 });
 
+  // Consent was given for a number; a different number starts without it,
+  // unless a manager records consent for the new one in the same request.
+  const consentReset = phoneChanged(phone, contact.phone) && contact.smsConsent && smsConsent === undefined;
   const updated = await prisma.contact.update({
     where: { id },
     data: {
@@ -42,9 +51,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       ...(name !== undefined ? { name: name?.trim() || null } : {}),
       ...(phone !== undefined ? { phone: cleanPhone || null } : {}),
       ...(email !== undefined ? { email: cleanEmail || null } : {}),
-      ...(smsConsent !== undefined && smsConsent !== contact.smsConsent
+      ...(consentChange
         ? { smsConsent, smsConsentAt: new Date(), smsConsentSource: `manual:${context.userId}` }
         : {}),
+      ...(consentReset ? { smsConsent: false, smsConsentAt: null, smsConsentSource: null } : {}),
     },
   });
   return NextResponse.json({ contact: updated });

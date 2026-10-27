@@ -10,6 +10,22 @@ const FORM_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const FORM_PAYLOAD = /^form:([a-z0-9]+):(\d+)$/;
 
+/**
+ * Store a form answer on the contact. A different phone number is a different
+ * person as far as SMS goes, so consent recorded for the old one is taken back.
+ */
+export async function saveAnswerToContact(instagramAccountId: string, igsid: string, field: string, value: string) {
+  const where = { instagramAccountId_igsid: { instagramAccountId, igsid } };
+  let update: Record<string, unknown> = { [field]: value };
+  if (field === "phone") {
+    const existing = await prisma.contact.findUnique({ where, select: { phone: true } });
+    if (existing?.phone && existing.phone !== value) {
+      update = { ...update, smsConsent: false, smsConsentAt: null, smsConsentSource: null };
+    }
+  }
+  await prisma.contact.upsert({ where, create: { instagramAccountId, igsid, [field]: value }, update });
+}
+
 type FormWithAccount = Awaited<ReturnType<typeof loadForm>>;
 
 function loadForm(id: string) {
@@ -182,13 +198,7 @@ export async function handleFormMessage({
   if (claimed.count === 0) return true;
 
   if (question.saveTo) {
-    await prisma.contact
-      .upsert({
-        where: { instagramAccountId_igsid: { instagramAccountId: form.instagramAccountId, igsid } },
-        create: { instagramAccountId: form.instagramAccountId, igsid, [question.saveTo]: value },
-        update: { [question.saveTo]: value },
-      })
-      .catch(() => {});
+    await saveAnswerToContact(form.instagramAccountId, igsid, question.saveTo, value).catch(() => {});
   }
 
   if (question.grantsSmsConsent && question.kind === "choice" && question.choices?.length) {
