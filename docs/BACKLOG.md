@@ -82,3 +82,11 @@ Support also said residents of Iran are allowed.
 
 - Run `npx tsx scripts/smoke-safe-fetch.ts` on the VPS outside Iran. The local network has no AAAA resolution, so the
   IPv6-only case of the custom `lookup` (`lib/net/safe-fetch.ts`) has never been exercised; it must report PASS there.
+
+## Zernio ingestion (from Phase 4a)
+
+- Handle `account.connected` / `account.disconnected` (today only logged): mark the connection, notify the owner.
+- Reject events whose `timestamp` is older than 6 days or more than 5 minutes ahead (proposal in `docs/ZERNIO_INGESTION.fa.md`).
+- Zernio post picker: confirm which id `GET /accounts/{id}/posts` returns, and match campaigns on `platformPostId`.
+- Decide whether a customer's reply to the page's public reply should start a campaign (today it does, as on Meta).
+- Check against a fresh real webhook that Zernio's signature is HMAC-SHA256 over the raw body with our secret.

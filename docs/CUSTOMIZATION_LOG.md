@@ -191,3 +191,19 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
   system `cert.pem`). This reduces the risk; it is not proof that nothing sensitive exists.
 - `:latest` was attached to the release candidate: the workflow forces `latest=true` for every `v*` tag. Proposal in
   `docs/BACKLOG.md` (not changed). Also proposed: add `secret` to the CI scan.
+
+### Phase 4a: Zernio ingestion (2026-10-27)
+
+Branch `feat/zernio-ingestion-fixes`. Findings and the verified/unverified split: `docs/ZERNIO_INGESTION.fa.md`.
+
+- `lib/zernio/normalize-event.ts`: `getZernioAccountId` (`accountId ?? id`, WARN when they differ), `readZernioHeaders`
+  (`x-zernio-*` then `x-late-*`), `resolveZernioEventId`, `parseZernioSentMessage`; `verifyZernioSignature` takes bytes.
+  Comments with `author.isOwnAccount` are dropped. Attachment and story URLs no longer travel on.
+- `app/api/zernio/webhook/[workspaceId]/route.ts`: signature over the raw bytes, event-id claim
+  (`ZernioEventReceipt`, released on failure), `message.sent` recorded in `ZernioSentMessage` only, `account.connected` /
+  `account.disconnected` logged.
+- Migration `20261027120000_zernio_event_receipts` (two new tables). `lib/ops/retention.ts` prunes receipts after 7 days and
+  sent-message rows after 90. No external-id column was `VarChar`, so no column migration was needed.
+- Fixtures: `__tests__/fixtures/zernio/` (sanitized). Tests: `zernio-ingestion.test.ts`, `zernio-webhook-route.db.test.ts`.
+- Upstream-derived files touched: `lib/ops/retention.ts`, `.env.example`, `__tests__/retention.test.ts`.
+- Not verified: the signature against Zernio's real one (secret was not available).
