@@ -10,7 +10,7 @@ import { UnsafeUrlError } from "@/lib/net/safe-url";
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 export type LlmConfig = { provider: "ANTHROPIC" | "OPENAI"; model: string; apiKey: string; baseUrl?: string | null };
 
-export const ANTHROPIC_MODELS = ["claude-sonnet-5-5", "claude-haiku-4-5-20251001", "claude-opus-5-5"] as const;
+export { ANTHROPIC_MODELS } from "./models";
 const MAX_TOKENS = 500;
 const TIMEOUT_MS = 45_000;
 
