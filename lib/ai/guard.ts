@@ -14,6 +14,24 @@ import { toAsciiDigits } from "@/lib/forms/answers";
 const MONEY_WORDS = ["تومان", "تومن", "ریال", "میلیون", "میلیارد", "دلار", "یورو", "درهم", "درصد", "تخفیف"];
 const MONEY_SYMBOLS = /[$€£%]/;
 
+// Claims about capacity or stock: whether something is free, left or full is
+// what a sales person confirms, never the model. Written as the phrase, since
+// "تکمیل فرم" (filling in the form) is an ordinary thing to say.
+const AVAILABILITY_PHRASES = ["ظرفیت", "موجود", "خالی", "باقی مانده", "باقی‌مانده", "تکمیل شد", "تکمیل است", "پر است", "پر شد"];
+
+// Numbers written as Persian words. The big ones (hundreds, thousand) are
+// figures by themselves; the small ones are only held back next to money,
+// because "دو روز" is an ordinary sentence.
+const BIG_NUMBER_WORDS = new Set(["صد", "یکصد", "دویست", "سیصد", "چهارصد", "پانصد", "ششصد", "هفتصد", "هشتصد", "نهصد", "هزار"]);
+const SMALL_NUMBER_WORDS = new Set([
+  "صفر", "یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده", "یازده", "دوازده", "سیزده", "چهارده", "پانزده",
+  "شانزده", "هفده", "هجده", "نوزده", "بیست", "سی", "چهل", "پنجاه", "شصت", "هفتاد", "هشتاد", "نود",
+]);
+
+// A domain or short link written without http: "shop.ir/pay", "t.me/x", "wa.me/98...".
+const DOMAIN_LIKE =
+  /(?<![\w.-])(?:[a-z0-9-]+\.)+(?:ir|com|net|org|io|me|co|app|dev|info|xyz|ly|ai|shop|online|site|tv|biz|link)\b(?:\/[^\s)»"']*)?/gi;
+
 const NUMBER = /\d[\d,٬،.٫]*/g;
 const URL_LIKE = /(?:https?:\/\/|www\.)[^\s)»"']+/gi;
 
@@ -22,7 +40,7 @@ function digitsOnly(token: string): string {
 }
 
 function normalise(text: string): string {
-  return toAsciiDigits(text).normalize("NFKC");
+  return toAsciiDigits(text).normalize("NFKC").replace(/\u200c/g, " ");
 }
 
 /** Digit groups of a text, without separators: "1,500,000" and "۱۵۰۰۰۰۰" are one. */
@@ -41,8 +59,8 @@ function trimUrl(url: string): string {
 
 /**
  * What the answer says that nothing it was given supports: figures of three or
- * more digits, shorter ones next to a money word, money words themselves, and
- * links. Empty when the answer is safe to send.
+ * more digits, shorter ones next to a money word, money words themselves,
+ * amounts in words, capacity or stock claims, and links or bare domains. Empty when the answer is safe to send.
  */
 export function unsupportedFacts(answer: string, allowed: string): string[] {
   const text = normalise(answer);
@@ -50,6 +68,20 @@ export function unsupportedFacts(answer: string, allowed: string): string[] {
   const knownFigures = figuresIn(known);
   const knownLower = known.toLowerCase();
   const problems: string[] = [];
+
+  const words = (value: string) => value.split(/[\s.,;:!?،؛()«»"'/\-]+/).filter(Boolean);
+  const tokens = words(text);
+  const knownTokens = new Set(words(known));
+  const isMoneyWord = (w: string) => MONEY_WORDS.includes(w) || BIG_NUMBER_WORDS.has(w);
+  tokens.forEach((word, i) => {
+    if (knownTokens.has(word)) return;
+    if (BIG_NUMBER_WORDS.has(word)) problems.push(word);
+    else if (SMALL_NUMBER_WORDS.has(word) && tokens.slice(Math.max(0, i - 2), i + 3).some(isMoneyWord)) problems.push(word);
+  });
+
+  for (const phrase of AVAILABILITY_PHRASES) {
+    if (text.includes(phrase) && !known.includes(phrase)) problems.push(phrase);
+  }
 
   for (const match of text.matchAll(NUMBER)) {
     const digits = digitsOnly(match[0]);
@@ -67,6 +99,10 @@ export function unsupportedFacts(answer: string, allowed: string): string[] {
   for (const match of text.matchAll(URL_LIKE)) {
     const url = trimUrl(match[0]);
     if (!knownLower.includes(url)) problems.push(url);
+  }
+  for (const match of text.replace(URL_LIKE, " ").matchAll(DOMAIN_LIKE)) {
+    const domain = trimUrl(match[0]);
+    if (!knownLower.includes(domain)) problems.push(domain);
   }
 
   return [...new Set(problems)];

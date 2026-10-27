@@ -157,8 +157,10 @@ export async function answerWithAi({
       await recordAiEvent(workspaceId, "WARNING", "The AI assistant could not answer", { assistantId: assistant.id, igsid, reason: failure });
     }
     if (!failure) {
-      // What the model may rely on: what the owner wrote and what was said in this conversation.
-      const allowed = [assistant.persona, assistant.knowledge, ...turns.map((t) => t.content)].join("\n");
+      // What the model may state: only what the owner wrote. What the customer
+      // typed is not evidence (they could "teach" it a price), and neither are
+      // earlier answers, which were checked against this same text.
+      const allowed = [assistant.persona, assistant.knowledge].join("\n");
       const unsupported = unsupportedFacts(modelAnswer, allowed);
       if (unsupported.length > 0) {
         failure = `unsupported in the answer: ${unsupported.join(", ")}`;
