@@ -6,6 +6,8 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["__tests__/**/*.test.ts"],
+    // The database tests build a schema from every migration in beforeAll.
+    hookTimeout: 120_000,
   },
   resolve: {
     alias: {

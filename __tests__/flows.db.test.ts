@@ -23,7 +23,12 @@ const state = vi.hoisted(() => ({
   db: undefined as unknown as import("../app/generated/prisma/client").PrismaClient,
   jobs: [] as Array<{ id: string; name: string; data: Record<string, unknown>; opts?: { delay?: number } }>,
   redis: new Map<string, string>(),
+  postJson: (async () => {
+    throw new Error("no model stubbed");
+  }) as (url: string, headers: Record<string, string>, body: unknown) => Promise<{ status: number; headers: object; text: string }>,
 }));
+// The AI request goes through postJson (tested in safe-fetch.test.ts); the model is stubbed here.
+vi.mock("@/lib/net/safe-fetch", async (orig) => ({ ...(await orig<object>()), postJson: (...args: Parameters<typeof state.postJson>) => state.postJson(...args) }));
 vi.mock("@/lib/db/client", () => ({
   get prisma() {
     return state.db;
@@ -501,13 +506,13 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
   function stubModel(...answers: (string | number)[]) {
     model.calls = [];
     model.answers = answers;
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
-      model.calls.push(JSON.parse(String(init.body)));
+    state.postJson = async (_url, _headers, body) => {
+      model.calls.push(body as (typeof model.calls)[number]);
       const next = model.answers.shift() ?? "؟";
       return typeof next === "number"
-        ? new Response(JSON.stringify({ error: { message: "busy" } }), { status: next })
-        : new Response(JSON.stringify({ content: [{ type: "text", text: next }] }), { status: 200 });
-    });
+        ? { status: next, headers: {}, text: JSON.stringify({ error: { message: "busy" } }) }
+        : { status: 200, headers: {}, text: JSON.stringify({ content: [{ type: "text", text: next }] }) };
+    };
   }
   async function withAssistant(limit = 20) {
     process.env.ENCRYPTION_KEY ??= "0".repeat(64);
@@ -642,11 +647,11 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
       expect(await texts()).toEqual([handoffText()]);
     });
 
-    it("sends a figure that the customer themselves wrote, so quoting their budget back is fine", async () => {
+    it("does not send a figure only the customer wrote: what they type is not evidence, so they cannot teach it a price", async () => {
       await withAssistant();
       stubModel("برای بودجه ۵۰۰ میلیون که فرمودید، مشاور تماس می‌گیرد.");
       await act({ action: "dm", text: "بودجه‌ام ۵۰۰ میلیون است" });
-      expect(await texts()).toEqual(["برای بودجه ۵۰۰ میلیون که فرمودید، مشاور تماس می‌گیرد."]);
+      expect(await texts()).toEqual([handoffText()]);
     });
 
     it("counts failed and handed-off attempts toward the daily limit, so errors cannot be used to run up cost", async () => {
