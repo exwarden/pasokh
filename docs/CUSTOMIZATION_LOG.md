@@ -120,3 +120,14 @@ Upstream files touched: `app/api/workspace/{members,invitations/accept}/route.ts
 `app/api/contacts/[id]/route.ts`, `lib/forms/engine.ts`, `app/api/ai/route.ts`, `lib/users/{login-throttle,accounts}.ts`,
 `app/setup/page.tsx`, `lib/ai/{guard,assistant}.ts`, `lib/env.ts`, `lib/auth.ts`, `proxy.ts`, `lib/sms/campaigns.ts`.
 
+### Phase 2c, second round (2026-10-27)
+
+- Item 7: `lib/net/safe-fetch.ts` `postJson` connects through a custom `lookup` that refuses private answers, so the checked
+  address is the one connected to (no second resolve), reads at most 1 MiB, follows no redirect. `safe-url.ts` now parses
+  IPv6 to bytes and refuses `::/96`, `64:ff9b:1::/48`, 6to4, Teredo, `100::/64`, `fec0::/10`; NAT64 `64:ff9b::/96` is judged by
+  its embedded IPv4. `lib/ai/models.ts` split out of `llm.ts` (the client page imports the list).
+- Item 8: `sender-guard.ts` is `checkLoop` (every message and button tap) plus `checkAutoReplyCap` (only what would start a
+  reply; form answers, menu taps and comment-prompt answers return earlier and are not counted). Redis failure still allows,
+  now with an event "Sender limits could not be checked".
+- `vitest.config.ts`: `hookTimeout` 120 s (database tests build a schema in `beforeAll`).
+
