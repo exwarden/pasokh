@@ -449,16 +449,26 @@ model ZernioConnection {
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
+enum ZernioReceiptStatus {
+  CLAIMED
+  ENQUEUED
+}
+
 /// One row per Zernio webhook event already accepted for processing, keyed by the
 /// event id Zernio puts in the body (and in x-zernio-event-id). Zernio delivers
 /// at least once and retries for about 51 hours, so a redelivery must not run
 /// the automation twice. Pruned after ZERNIO_EVENT_RECEIPT_RETENTION_DAYS.
 model ZernioEventReceipt {
-  id          String   @id @default(cuid())
+  id          String              @id @default(cuid())
   workspaceId String
   eventId     String
   event       String
-  createdAt   DateTime @default(now())
+  /// CLAIMED while a delivery is being handled, ENQUEUED once its jobs are in the
+  /// queue. A CLAIMED row older than the stale limit belongs to a process that
+  /// died and is taken over by the next delivery.
+  status      ZernioReceiptStatus @default(CLAIMED)
+  claimedAt   DateTime            @default(now())
+  createdAt   DateTime            @default(now())
 
   @@unique([workspaceId, eventId])
   @@index([createdAt])
