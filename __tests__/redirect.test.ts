@@ -15,6 +15,9 @@ vi.mock("@/lib/db/client", () => ({
   prisma: mockPrisma,
 }));
 
+// The per-visitor click counter lives in Redis; it has its own tests.
+vi.mock("@/lib/tracking/click-limit", () => ({ shouldRecordClick: async () => true }));
+
 import { GET } from "../app/r/[slug]/route";
 
 beforeEach(() => {

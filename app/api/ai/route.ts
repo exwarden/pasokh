@@ -32,12 +32,17 @@ export async function PUT(request: NextRequest) {
   const existing = await prisma.aiAssistant.findUnique({ where: { instagramAccountId: account.id } });
   const apiKey = input.apiKey ? encryptToken(input.apiKey) : existing?.apiKey;
   if (!apiKey) return NextResponse.json({ error: "Enter the API key." }, { status: 400 });
+  // A stored key is bound to the provider and address it was saved for.
+  const nextBaseUrl = input.provider === "OPENAI" ? input.baseUrl ?? null : null;
+  if (!input.apiKey && existing && (existing.provider !== input.provider || (existing.baseUrl ?? null) !== nextBaseUrl)) {
+    return NextResponse.json({ error: "Enter the API key again when you change the provider or its address." }, { status: 400 });
+  }
 
   const data = {
     enabled: input.enabled,
     provider: input.provider,
     model: input.model,
-    baseUrl: input.provider === "OPENAI" ? input.baseUrl ?? null : null,
+    baseUrl: nextBaseUrl,
     apiKey,
     persona: input.persona,
     tone: input.tone,

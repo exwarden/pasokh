@@ -4,8 +4,13 @@ name: Publish image
 # Container Registry (ghcr.io/<owner>/pasokh). Uses the workflow's own
 # GITHUB_TOKEN, so no secrets need to be configured.
 #
-#   push to main  -> :main, :sha-xxxxxxx
-#   tag vX.Y.Z    -> :X.Y.Z, :X.Y, :latest
+#   tag vX.Y.Z    -> :X.Y.Z, :X.Y, :latest, :sha-xxxxxxx
+#   (run by hand)  -> :<branch>, :sha-xxxxxxx
+#
+# Nothing is published on a plain push: a release is a tag we create on
+# purpose. The tag runs CI first (job `ci`) and a Trivy scan before any tag is
+# attached to the image. Deploy by the digest in the run summary, never by a
+# floating tag.
 #
 # Each architecture builds on its own native runner (arm64 under emulation
 # takes the Next.js build from minutes to most of an hour), then one job joins
@@ -13,19 +18,28 @@ name: Publish image
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
+# Nothing by default; the jobs that push get packages: write.
+permissions: {}
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/pasokh
 
 jobs:
+  # Typecheck, lint, tests (with Postgres and Redis), build and the audit gate.
+  # Nothing below runs unless this passes, whichever commit the tag points at.
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -36,14 +50,14 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Lowercase image name
         run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -51,7 +65,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -65,7 +79,7 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: digest-${{ strategy.job-index }}
           path: /tmp/digests/*
@@ -74,8 +88,13 @@ jobs:
   merge:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -84,16 +103,16 @@ jobs:
       - name: Lowercase image name
         run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -104,9 +123,38 @@ jobs:
           flavor: |
             latest=${{ startsWith(github.ref, 'refs/tags/v') }}
 
+      # Before any tag exists: a failing scan leaves only untagged layers behind.
+      # Fails on fixable HIGH or CRITICAL findings; the accepted ones are in
+      # .trivyignore, each with the reason. The npm CLI bundled in the base image
+      # (usr/local/lib/node_modules/npm) is skipped: only `npx prisma migrate deploy`
+      # runs it, and the base image is pinned and bumped on purpose. The scanner
+      # image is pinned by digest.
+      - name: Scan each image (fail on fixable HIGH or CRITICAL)
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for file in /tmp/digests/*; do
+            digest="sha256:$(basename "$file")"
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+              -v "$GITHUB_WORKSPACE/.trivyignore:/.trivyignore:ro" \
+              aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+              image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile /.trivyignore --skip-dirs usr/local/lib/node_modules/npm \
+              --exit-code 1 --no-progress \
+              "${{ env.IMAGE }}@${digest}"
+          done
+
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Show the digest to deploy
+        run: |
+          ref=$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+          echo "### Image digest" >> "$GITHUB_STEP_SUMMARY"
+          echo '`PASOKH_IMAGE=${{ env.IMAGE }}@'"$digest"'`' >> "$GITHUB_STEP_SUMMARY"

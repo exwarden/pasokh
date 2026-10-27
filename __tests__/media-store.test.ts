@@ -14,11 +14,13 @@ vi.mock("@/lib/db/client", () => ({
       },
       findUnique: async ({ where }: { where: { publicId: string } }) => db.assets.find((a) => a.publicId === where.publicId) ?? null,
       findMany: async () => db.assets,
+      aggregate: async () => ({ _sum: { sizeBytes: db.assets.reduce((n, a) => n + Number(a.sizeBytes ?? 0), 0) } }),
     },
   },
 }));
 vi.mock("@/lib/workspace-access", () => ({
   getCurrentWorkspaceContext: async () => ({ userId: "u", workspaceId: "ws1", role: "OWNER" }),
+  managerOnly: () => null,
 }));
 
 import { checkUpload, isPublicId, mediaUrl, newPublicId, sniffFormat } from "../lib/media/store";

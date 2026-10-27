@@ -16,6 +16,7 @@ type Contact = {
   phone: string | null;
   email: string | null;
   tags: string[];
+  smsConsent: boolean;
   firstSeenAt: string;
   lastInboundAt: string | null;
 };
@@ -67,7 +68,7 @@ export default function ContactsPage() {
     const response = await fetch(`/api/contacts/${editing.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: editing.name, phone: editing.phone, email: editing.email, tags: editing.tags }),
+      body: JSON.stringify({ name: editing.name, phone: editing.phone, email: editing.email, tags: editing.tags, smsConsent: editing.smsConsent }),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
@@ -131,6 +132,7 @@ export default function ContactsPage() {
                     </p>
                     <p className="text-xs text-muted">
                       {c.phone && <span dir="ltr" className="me-3">{c.phone}</span>}
+                      {c.phone && c.smsConsent && <span className="me-3 text-success">{t("Agreed to SMS")}</span>}
                       {c.email && <span dir="ltr" className="me-3">{c.email}</span>}
                       {t("Last message: {date}", { date: date(c.lastInboundAt) })}
                     </p>
@@ -173,6 +175,10 @@ export default function ContactsPage() {
               defaultValue={editing.tags.join("، ")}
               onChange={(e) => setEditing({ ...editing, tags: e.target.value.split(/[,،]/).map((x) => x.trim()).filter(Boolean) })}
             />
+            <label className="flex items-start gap-2 text-xs">
+              <input type="checkbox" className="mt-0.5" checked={editing.smsConsent} onChange={(e) => setEditing({ ...editing, smsConsent: e.target.checked })} />
+              {t("This person agreed to receive SMS. Tick it only if you have their consent.")}
+            </label>
             {editError && <p className="text-xs text-error">{editError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm" onClick={() => setEditing(null)}>{t("Cancel")}</button>

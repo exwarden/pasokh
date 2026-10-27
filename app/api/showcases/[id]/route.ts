@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { commandsUsingShowcase, presentShowcase, readShowcaseInput, showcaseData } from "@/lib/showcases/api";
 
 export const runtime = "nodejs";
@@ -23,6 +23,8 @@ export async function GET(_request: NextRequest, { params }: Params) {
 export async function PUT(request: NextRequest, { params }: Params) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const { id } = await params;
   const existing = await owned(id, context.workspaceId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -39,6 +41,8 @@ export async function PUT(request: NextRequest, { params }: Params) {
 export async function DELETE(_request: NextRequest, { params }: Params) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const { id } = await params;
   const existing = await owned(id, context.workspaceId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });

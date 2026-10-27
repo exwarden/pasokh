@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser } from "@/lib/workspace";
+import { hashInvitationToken } from "@/lib/workspace-invitations";
+import { setupTokenMatches } from "./setup-token";
 import { hashPassword, passwordProblem, verifyPassword } from "./password";
-import { clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
+import { ThrottleUnavailableError, clearLoginFailures, reserveLoginAttempt } from "./login-throttle";
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -23,6 +25,9 @@ const ACCOUNT_ERROR_KEYS = [
   "Password is too long.",
   "Passwords do not match.",
   "Setup is already complete. Sign in instead.",
+  "The setup token is wrong.",
+  "Setup is unavailable right now. Try again in a minute.",
+  "Too many wrong setup tokens. Try again in 15 minutes.",
   "This invitation is no longer valid.",
   "An account with this email already exists. Sign in to accept the invitation.",
 ] as const;
@@ -59,7 +64,10 @@ export async function createFirstOwner(input: {
   password: string;
   confirm: string;
   workspaceName: string;
+  /** SETUP_TOKEN from the server's .env: proof the caller controls the server. */
+  setupToken: string;
 }): Promise<{ userId: string; email: string }> {
+  if (!setupTokenMatches(input.setupToken)) throw new AccountError("The setup token is wrong.");
   const email = normalizeEmail(input.email);
   validate(email, input.password, input.confirm);
   const passwordHash = await hashPassword(input.password);
@@ -93,7 +101,7 @@ export async function createInvitedUser(input: {
   password: string;
   confirm: string;
 }): Promise<{ userId: string; email: string }> {
-  const invitation = await prisma.workspaceInvitation.findUnique({ where: { token: input.token } });
+  const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hashInvitationToken(input.token) } });
   if (!invitation || invitation.status !== "PENDING" || invitation.expiresAt <= new Date()) {
     throw new AccountError("This invitation is no longer valid.");
   }
@@ -116,25 +124,29 @@ export async function createInvitedUser(input: {
 }
 
 export type CredentialCheck =
-  | { ok: true; user: { id: string; email: string; name: string | null } }
-  | { ok: false; reason: "throttled" | "invalid" };
+  | { ok: true; user: { id: string; email: string; name: string | null; sessionVersion: number } }
+  | { ok: false; reason: "throttled" | "invalid" | "unavailable" };
 
 export async function checkCredentials(rawEmail: string, password: string, ip: string | null): Promise<CredentialCheck> {
   const email = normalizeEmail(rawEmail);
-  if (await isLoginThrottled(email, ip)) return { ok: false, reason: "throttled" };
+  try {
+    if (await reserveLoginAttempt(email, ip)) return { ok: false, reason: "throttled" };
+  } catch (error) {
+    if (error instanceof ThrottleUnavailableError) return { ok: false, reason: "unavailable" };
+    throw error;
+  }
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, email: true, name: true, passwordHash: true },
+    select: { id: true, email: true, name: true, passwordHash: true, sessionVersion: true },
   });
   // Verify even when the user is missing so response time does not reveal
   // which addresses have accounts.
   const valid = await verifyPassword(password, user?.passwordHash ?? DUMMY_HASH);
   if (!user || !user.passwordHash || !valid) {
-    await recordLoginFailure(email, ip);
     return { ok: false, reason: "invalid" };
   }
-  await clearLoginFailures(email);
-  return { ok: true, user: { id: user.id, email: user.email ?? email, name: user.name } };
+  await clearLoginFailures(email, ip);
+  return { ok: true, user: { id: user.id, email: user.email ?? email, name: user.name, sessionVersion: user.sessionVersion ?? 0 } };
 }
 
 /** Sets a new password; used by the CLI reset script and account settings. */
@@ -144,7 +156,7 @@ export async function setPassword(rawEmail: string, password: string): Promise<b
   const email = normalizeEmail(rawEmail);
   const result = await prisma.user.updateMany({
     where: { email },
-    data: { passwordHash: await hashPassword(password) },
+    data: { passwordHash: await hashPassword(password), sessionVersion: { increment: 1 } },
   });
   if (result.count > 0) await clearLoginFailures(email);
   return result.count > 0;

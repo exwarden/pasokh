@@ -5,7 +5,7 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "crypto";
-import { getEncryptionKeyHex, requireEnv } from "@/lib/env";
+import { getEncryptionKeyHex, getPreviousEncryptionKeysHex, requireEnv } from "@/lib/env";
 
 // Instagram API with Instagram Login authorizes on www.instagram.com. The old
 // api.instagram.com/oauth/authorize host belonged to the retired Basic Display
@@ -21,6 +21,8 @@ const STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 interface OAuthStatePayload {
   workspaceId: string;
+  /** The person who started the connection: the callback accepts only their session. */
+  userId: string;
   ts: number;
 }
 
@@ -38,9 +40,9 @@ function signState(payload: string): string {
     .digest("base64url");
 }
 
-export function createOAuthState(workspaceId: string): string {
+export function createOAuthState(workspaceId: string, userId: string): string {
   const payload = base64UrlEncode(
-    JSON.stringify({ workspaceId, ts: Date.now() } satisfies OAuthStatePayload)
+    JSON.stringify({ workspaceId, userId, ts: Date.now() } satisfies OAuthStatePayload)
   );
   return `${payload}.${signState(payload)}`;
 }
@@ -64,7 +66,7 @@ export function verifyOAuthState(state: string | null): OAuthStatePayload | null
 
   try {
     const parsed = JSON.parse(base64UrlDecode(payload)) as OAuthStatePayload;
-    if (!parsed.workspaceId || Date.now() - parsed.ts > STATE_MAX_AGE_MS) {
+    if (!parsed.workspaceId || !parsed.userId || Date.now() - parsed.ts > STATE_MAX_AGE_MS) {
       return null;
     }
 
@@ -138,8 +140,7 @@ export function encryptToken(plaintext: string): string {
   return combined.toString("base64");
 }
 
-export function decryptToken(encryptedBase64: string): string {
-  const key = getEncryptionKey();
+function decryptWith(key: Buffer, encryptedBase64: string): string {
   const combined = Buffer.from(encryptedBase64, "base64");
 
   const iv = combined.subarray(0, IV_LENGTH);
@@ -149,7 +150,29 @@ export function decryptToken(encryptedBase64: string): string {
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
 
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
-    "utf8"
-  );
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
+/**
+ * Decrypts with ENCRYPTION_KEY and, if that fails the GCM authentication,
+ * with each ENCRYPTION_KEY_PREVIOUS. `previous` says an old key was needed, so
+ * the value should be written again (npm run keys:rotate).
+ */
+export function decryptTokenWithKeyInfo(encryptedBase64: string): { plaintext: string; previous: boolean } {
+  try {
+    return { plaintext: decryptWith(getEncryptionKey(), encryptedBase64), previous: false };
+  } catch (error) {
+    for (const hex of getPreviousEncryptionKeysHex()) {
+      try {
+        return { plaintext: decryptWith(Buffer.from(hex, "hex"), encryptedBase64), previous: true };
+      } catch {
+        // try the next one
+      }
+    }
+    throw error;
+  }
+}
+
+export function decryptToken(encryptedBase64: string): string {
+  return decryptTokenWithKeyInfo(encryptedBase64).plaintext;
 }

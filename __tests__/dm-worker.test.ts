@@ -123,6 +123,12 @@ vi.mock("@/lib/billing/usage", () => ({
   releaseWorkspaceDMReservation: mockReleaseWorkspaceDMReservation,
 }));
 
+// Sender limits need Redis and are tested in sender-guard*.test.ts; here every sender is allowed.
+vi.mock("@/lib/automation/sender-guard", () => ({
+  checkLoop: async () => "allow",
+  checkAutoReplyCap: async () => "allow",
+}));
+
 vi.mock("@/lib/ops/worker-health", () => ({
   recordWorkerAlert: vi.fn(),
 }));
@@ -1052,6 +1058,41 @@ describe("DM Worker — one private reply per comment", () => {
         }),
       })
     );
+  });
+
+  it("should not DM the same person again for a second comment under the same campaign inside the cooldown", async () => {
+    // A different comment of the same commenter already got this campaign's DM.
+    mockPrisma.dmLog.findFirst.mockImplementation(
+      async (args: { where?: { status?: string; commenterId?: string } } = {}) =>
+        args.where?.status === "SENT" && args.where.commenterId
+          ? { dmSentAt: new Date(Date.now() - 3_600_000) }
+          : args.where?.status === "SENT"
+            ? null
+            : { commenterName: "commenter_user" }
+    );
+
+    const processor = getProcessor();
+    await processor(createMockJob({ ...mockJobData, commentId: "comment_second" }));
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockReserveDMSlot).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "SKIPPED_DEDUP",
+          errorMessage: expect.stringContaining("cooldown"),
+        }),
+      })
+    );
+  });
+
+  it("should send the first DM when the commenter has none inside the cooldown", async () => {
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
   });
 
   it("should not fall back to a plain-text private reply when the window is the problem", async () => {

@@ -26,6 +26,7 @@ import {
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import { isOwnComment } from "@/lib/instagram/own-comment";
+import { commentDmCooldownMs, findRecentDmToCommenter } from "@/lib/automation/comment-cooldown";
 import {
   MetaApiError,
   RateLimitError,
@@ -67,6 +68,8 @@ import { ZernioApiError } from "@/lib/zernio/client";
 import { runSequenceStep } from "@/lib/sequences/engine";
 import { handleFormMessage } from "@/lib/forms/engine";
 import { answerWithAi } from "@/lib/ai/assistant";
+import { checkAutoReplyCap, checkLoop } from "@/lib/automation/sender-guard";
+import { recordEvent } from "@/lib/ops/events";
 import { processSmsBatch } from "@/lib/sms/campaigns";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
@@ -592,6 +595,30 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "SKIPPED_DEDUP",
           matchedKeyword: matchResult.matchedKeyword,
           errorMessage: `Another campaign (${privateReplyUsedBy.automation?.name ?? "unknown"}) already sent the one private reply Instagram allows for this comment`,
+        },
+      });
+      continue;
+    }
+
+    // One person commenting the keyword several times gets one DM per campaign
+    // per cooldown window, not one per comment. The public reply above is
+    // per comment and unaffected.
+    const cooldownMs = commentDmCooldownMs();
+    const recentDm = await findRecentDmToCommenter({
+      automationId: automation.id,
+      commenterId,
+      commentId,
+      cooldownMs,
+    });
+    if (recentDm) {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SKIPPED_DEDUP",
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage: `This person already received a DM from this campaign inside the ${Math.round(cooldownMs / 3_600_000 * 10) / 10} h cooldown`,
         },
       });
       continue;
@@ -1156,6 +1183,17 @@ async function runCampaignCommand({
 async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
 
+  // A button tap is as fast as the sender makes it: a bot tapping buttons in a
+  // loop is paused like one sending text. Taps are never counted toward the
+  // hourly cap (the button belongs to a conversation we began).
+  if (!fallback) {
+    const loop = await checkLoop({ instagramId: instagramAccountId, senderId: userId, messageId: `tap:${job.data.mid ?? job.id}` });
+    if (loop !== "allow") {
+      console.warn(`[DM Worker] Not answering ${userId} automatically: ${loop}`);
+      return;
+    }
+  }
+
   // A tap is a message from them and opens the 24-hour window; a read
   // fallback is not.
   if (!fallback) {
@@ -1587,6 +1625,23 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
+  // Our own messages come back as echoes. The webhook parsers drop them by
+  // their echo flag (Meta `is_echo`, Zernio `direction: outgoing`), which does
+  // not depend on any id. This comparison is only a second lock: it holds when
+  // the webhook's account id and the stored `instagramId` (the OAuth `user_id`)
+  // are the same id space, which has not been checked against a live Meta
+  // connection.
+  if (senderId === instagramAccountId) return;
+
+  // A sender who sends messages faster than a person can (another
+  // auto-responder) is paused for an hour, whatever they are in the middle of.
+  // The hourly cap comes later, and only for what starts a reply.
+  const loop = await checkLoop({ instagramId: instagramAccountId, senderId, messageId });
+  if (loop !== "allow") {
+    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${loop}`);
+    return;
+  }
+
   await touchContact({
     instagramId: instagramAccountId,
     accountConnectionId: job.data.accountConnectionId,
@@ -1673,6 +1728,15 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       await releaseCommentAnswer(resumed.id);
       throw error;
     }
+    return;
+  }
+
+  // From here on the message starts an automatic reply, so it counts toward
+  // the sender's hourly cap. Form answers, menu taps and the answer to a
+  // comment-reply prompt returned above and are never counted.
+  const cap = await checkAutoReplyCap({ instagramId: instagramAccountId, senderId, messageId });
+  if (cap !== "allow") {
+    console.warn(`[DM Worker] Not answering ${senderId} automatically: ${cap}`);
     return;
   }
 
@@ -1979,6 +2043,8 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       igsid: senderId,
       messageId,
       text: messageText,
+      // BullMQ counts attempts after a failure: on the last allowed run nothing retries.
+      finalAttempt: job.attemptsMade + 1 >= (job.opts?.attempts ?? 1),
     });
   }
 }
@@ -2034,18 +2100,16 @@ async function recordWorkerFailure(
         })
       : null;
 
-    await prisma.operationalEvent.create({
-      data: {
-        workspaceId: account?.workspaceId ?? null,
-        source: "WORKER",
-        level: "ERROR",
-        message: `DM worker job ${job?.id ?? "unknown"} failed: ${error.message}`,
-        payload: {
-          jobId: job?.id ?? null,
-          attemptsMade: job?.attemptsMade ?? null,
-          instagramAccountId: instagramAccountId ?? null,
-          commentId,
-        },
+    // One row per kind of failure, not per job: the job id is in the payload.
+    await recordEvent({
+      workspaceId: account?.workspaceId ?? null,
+      level: "ERROR",
+      message: `DM worker job failed: ${error.message}`.slice(0, 300),
+      payload: {
+        jobId: job?.id ?? null,
+        attemptsMade: job?.attemptsMade ?? null,
+        instagramAccountId: instagramAccountId ?? null,
+        commentId,
       },
     });
 
@@ -2088,21 +2152,7 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   worker.on("error", (err) => {
     console.error("[DM Worker] Worker error:", err.message);
-    void prisma.operationalEvent
-      .create({
-        data: {
-          source: "WORKER",
-          level: "ERROR",
-          message: `DM worker process error: ${err.message}`,
-          payload: { name: err.name },
-        },
-      })
-      .catch((recordError) => {
-        console.error(
-          "[DM Worker] Failed to record worker process error:",
-          formatError(recordError)
-        );
-      });
+    void recordEvent({ level: "ERROR", message: `DM worker process error: ${err.message}`.slice(0, 300), payload: { name: err.name } });
   });
 
   return worker;

@@ -23,7 +23,12 @@ const state = vi.hoisted(() => ({
   db: undefined as unknown as import("../app/generated/prisma/client").PrismaClient,
   jobs: [] as Array<{ id: string; name: string; data: Record<string, unknown>; opts?: { delay?: number } }>,
   redis: new Map<string, string>(),
+  postJson: (async () => {
+    throw new Error("no model stubbed");
+  }) as (url: string, headers: Record<string, string>, body: unknown) => Promise<{ status: number; headers: object; text: string }>,
 }));
+// The AI request goes through postJson (tested in safe-fetch.test.ts); the model is stubbed here.
+vi.mock("@/lib/net/safe-fetch", async (orig) => ({ ...(await orig<object>()), postJson: (...args: Parameters<typeof state.postJson>) => state.postJson(...args) }));
 vi.mock("@/lib/db/client", () => ({
   get prisma() {
     return state.db;
@@ -36,6 +41,29 @@ vi.mock("@/lib/queue/client", () => ({
   }),
   getRedisConnection: () => ({
     get: async (key: string) => state.redis.get(key) ?? null,
+    multi: () => {
+      const ops: Array<() => number> = [];
+      const chain = {
+        incr: (key: string) => {
+          ops.push(() => {
+            state.redis.set(key, String(Number(state.redis.get(key) ?? 0) + 1));
+            return Number(state.redis.get(key));
+          });
+          return chain;
+        },
+        expire: () => {
+          ops.push(() => 1);
+          return chain;
+        },
+        exec: async () => ops.map((op) => [null, op()]),
+      };
+      return chain;
+    },
+    getdel: async (key: string) => {
+      const value = state.redis.get(key) ?? null;
+      state.redis.delete(key);
+      return value;
+    },
     set: async (key: string, value: string, ...args: unknown[]) => {
       if (args.includes("NX") && state.redis.has(key)) return null;
       state.redis.set(key, value);
@@ -64,7 +92,8 @@ vi.mock("bullmq", () => ({
 import { ensureLab, labState, runLabAction } from "../lib/simulator/lab";
 import { saveIceBreakers } from "../lib/ice-breakers/service";
 import { encryptToken } from "../lib/meta/oauth";
-import { createSmsCampaign, processSmsBatch } from "../lib/sms/campaigns";
+import { answerWithAi, handoffText } from "../lib/ai/assistant";
+import { createSmsCampaign, previewSmsCampaign, processSmsBatch, recipientsFor } from "../lib/sms/campaigns";
 import { TEMPLATE_KEYS, applyTemplate } from "../lib/templates/catalog";
 import { commandProblems, commandInputSchema, referencedCommandIds } from "../lib/commands/schema";
 import { createDMWorker } from "../lib/queue/dm-worker";
@@ -79,7 +108,8 @@ let process_: (job: unknown) => Promise<void>;
  * run too, unless their name is in `hold`: those stay queued, so a test can
  * act before a delayed step comes due.
  */
-async function drain(hold: string[] = []): Promise<void> {
+// The queue allows 3 attempts; `attemptsMade` is how many already failed (2 = this is the last run).
+async function drain(hold: string[] = [], attemptsMade = 0): Promise<void> {
   const held: QueuedJob[] = [];
   for (let guard = 0; state.jobs.length > 0 && guard < 50; guard++) {
     const job = state.jobs.shift() as QueuedJob;
@@ -87,7 +117,7 @@ async function drain(hold: string[] = []): Promise<void> {
       held.push(job);
       continue;
     }
-    await process_({ id: job.id, name: job.name, data: job.data, attemptsMade: 0 });
+    await process_({ id: job.id, name: job.name, data: job.data, attemptsMade, opts: { attempts: 3 } });
   }
   state.jobs.push(...held);
 }
@@ -163,6 +193,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await state.db.showcase.deleteMany();
     await state.db.sequence.deleteMany();
     await state.db.form.deleteMany();
+    await state.db.operationalEvent.deleteMany();
     await state.db.aiAssistant.deleteMany();
     await state.db.smsCampaign.deleteMany();
     await state.db.smsSettings.deleteMany();
@@ -411,6 +442,43 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     expect((await state.db.contact.findFirst({ where: { instagramAccountId: accountId } }))?.phone).toBe("09123456789");
   });
 
+  async function withConsentForm() {
+    const form = await state.db.form.create({
+      data: {
+        workspaceId: "ws",
+        instagramAccountId: accountId,
+        name: "رضایت",
+        cancelWord: "لغو",
+        completionMessage: "ممنون",
+        cancelMessage: "لغو شد",
+        questions: [
+          { id: "phone", text: "شماره‌ات؟", kind: "phone", saveTo: "phone" },
+          { id: "sms", text: "پیامک بفرستیم؟", kind: "choice", choices: ["بله", "خیر"], grantsSmsConsent: true },
+        ],
+      },
+    });
+    await state.db.command.create({
+      data: { workspaceId: "ws", instagramAccountId: accountId, name: "رضایت", keywords: ["ثبت نام"], formId: form.id, responses: [{ type: "text", text: "شروع" }] as never },
+    });
+    return form;
+  }
+
+  it("records SMS consent, with its time and source, only when the person picks the consent option", async () => {
+    const form = await withConsentForm();
+    const answer = async (title: string, index: number) => {
+      await act({ action: "dm", text: "ثبت نام" });
+      await act({ action: "dm", text: "09123456789" });
+      const ask = await lastOut();
+      await act({ action: "tap", payload: ask.quickReplies![index].payload, title, quickReply: true });
+      return state.db.contact.findFirstOrThrow({ where: { instagramAccountId: accountId } });
+    };
+    expect(await answer("خیر", 1)).toMatchObject({ phone: "09123456789", smsConsent: false, smsConsentSource: `form:${form.id}` });
+
+    const yes = await answer("بله", 0);
+    expect(yes).toMatchObject({ smsConsent: true, smsConsentSource: `form:${form.id}` });
+    expect(yes.smsConsentAt).toBeInstanceOf(Date);
+  });
+
   it("stops the form on the cancel word and answers keywords normally afterwards", async () => {
     const form = await withForm();
     await act({ action: "dm", text: "ثبت نام" });
@@ -438,13 +506,13 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
   function stubModel(...answers: (string | number)[]) {
     model.calls = [];
     model.answers = answers;
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
-      model.calls.push(JSON.parse(String(init.body)));
+    state.postJson = async (_url, _headers, body) => {
+      model.calls.push(body as (typeof model.calls)[number]);
       const next = model.answers.shift() ?? "؟";
       return typeof next === "number"
-        ? new Response(JSON.stringify({ error: { message: "busy" } }), { status: next })
-        : new Response(JSON.stringify({ content: [{ type: "text", text: next }] }), { status: 200 });
-    });
+        ? { status: next, headers: {}, text: JSON.stringify({ error: { message: "busy" } }) }
+        : { status: 200, headers: {}, text: JSON.stringify({ content: [{ type: "text", text: next }] }) };
+    };
   }
   async function withAssistant(limit = 20) {
     process.env.ENCRYPTION_KEY ??= "0".repeat(64);
@@ -465,7 +533,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
 
   it("shows the model the earlier exchange, so a follow-up question has something to refer to", async () => {
     await withAssistant();
-    stubModel("۱۵۰ هزار تومان.", "بله، دانشجویی ۱۰۰ هزار.");
+    stubModel("۱۵۰ هزار تومان.", "بله، دانشجویی هم همین است.");
     await act({ action: "dm", text: "بلیت چنده؟" });
     await act({ action: "dm", text: "دانشجویی هم داره؟" });
     expect(model.calls[1].messages).toEqual([
@@ -497,6 +565,117 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     expect(await texts()).toEqual(["حالا جواب"]);
   });
 
+  describe("one sender cannot make the account talk without end", () => {
+    const keywordReply = () => keywordCommand("قیمت", [{ type: "text", text: "لیست قیمت" }]);
+
+    it("pauses automatic replies for a sender who writes faster than a person, and resumes nothing early", async () => {
+      await keywordReply();
+      for (let i = 0; i < 14; i++) await act({ action: "dm", text: "قیمت" });
+      expect((await texts()).length).toBe(10);
+      expect(await state.db.operationalEvent.count({ where: { message: "Automatic replies to a sender were paused" } })).toBe(1);
+    });
+
+    it("answers at most 20 messages from one sender in an hour", async () => {
+      await keywordReply();
+      process.env.LOOP_MESSAGES_PER_MINUTE = "1000";
+      try {
+        for (let i = 0; i < 25; i++) await act({ action: "dm", text: "قیمت" });
+        expect((await texts()).length).toBe(20);
+      } finally {
+        delete process.env.LOOP_MESSAGES_PER_MINUTE;
+      }
+    });
+  });
+
+  describe("AI safeguards", () => {
+    const events = (message: string) => state.db.operationalEvent.findMany({ where: { message } });
+
+    it("sends the fixed handoff message, and records an event, when the model cannot be used", async () => {
+      await withAssistant();
+      stubModel(401);
+      await act({ action: "dm", text: "بلیت چنده؟" });
+      expect(await texts()).toEqual([handoffText()]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "HANDOFF", error: expect.stringContaining("model error") });
+      expect(await events("The AI assistant could not answer")).toHaveLength(1);
+    });
+
+    it("on the last attempt sends the handoff instead of leaving the customer unanswered, whatever failed", async () => {
+      await withAssistant();
+      stubModel(429);
+      await runLabAction("ws", { action: "dm", text: "بلیت چنده؟" });
+      await drain([], 2);
+      expect(await texts()).toEqual([handoffText()]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "HANDOFF" });
+      expect(await events("The AI assistant could not answer")).toHaveLength(1);
+    });
+
+    it("on an earlier attempt a busy provider is retried, not answered with the handoff", async () => {
+      await withAssistant();
+      stubModel(429);
+      await runLabAction("ws", { action: "dm", text: "بلیت چنده؟" });
+      await expect(drain([], 0)).rejects.toThrow(/busy/);
+      expect(await texts()).toEqual([]);
+    });
+
+    it("does not send the handoff once the 24-hour window has closed, and records that", async () => {
+      await withAssistant();
+      stubModel(401);
+      const { account, fan } = await ensureLab("ws");
+      await state.db.contact.create({
+        data: { instagramAccountId: account.id, igsid: fan.igsid, lastInboundAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+      });
+      const outcome = await answerWithAi({ instagramId: account.instagramId, igsid: fan.igsid, messageId: "late_1", text: "بلیت چنده؟" });
+      expect(outcome).toBe("FAILED");
+      expect(await texts()).toEqual([]);
+      expect(await state.db.aiReply.findFirst()).toMatchObject({ status: "FAILED", error: expect.stringContaining("window is closed") });
+      expect(await events("The AI assistant could not reach a customer")).toHaveLength(1);
+    });
+
+    it("holds back an answer with a price the knowledge base does not contain", async () => {
+      await withAssistant();
+      stubModel("بلیت ۲۰۰ هزار تومان است.");
+      await act({ action: "dm", text: "بلیت چنده؟" });
+      expect(await texts()).toEqual([handoffText()]);
+      const [held] = await events("The AI assistant's answer was held back");
+      expect(held.payload).toMatchObject({ unsupported: expect.arrayContaining(["200"]), heldBack: "بلیت ۲۰۰ هزار تومان است." });
+    });
+
+    it("holds back a link the owner never gave it", async () => {
+      await withAssistant();
+      stubModel("از اینجا بخرید: https://evil.example/pay");
+      await act({ action: "dm", text: "کجا بخرم؟" });
+      expect(await texts()).toEqual([handoffText()]);
+    });
+
+    it("does not send a figure only the customer wrote: what they type is not evidence, so they cannot teach it a price", async () => {
+      await withAssistant();
+      stubModel("برای بودجه ۵۰۰ میلیون که فرمودید، مشاور تماس می‌گیرد.");
+      await act({ action: "dm", text: "بودجه‌ام ۵۰۰ میلیون است" });
+      expect(await texts()).toEqual([handoffText()]);
+    });
+
+    it("counts failed and handed-off attempts toward the daily limit, so errors cannot be used to run up cost", async () => {
+      await withAssistant(2);
+      stubModel(401, 401, "نباید پرسیده شود");
+      for (const text of ["الف", "ب", "پ"]) await act({ action: "dm", text });
+      expect(model.calls).toHaveLength(2);
+      expect(await texts()).toEqual([handoffText(), handoffText()]);
+    });
+
+    it("stops the whole workspace at its daily total, and says so once", async () => {
+      await withAssistant(50);
+      process.env.AI_MAX_REPLIES_PER_DAY = "2";
+      try {
+        stubModel("۱", "۲", "۳", "۴");
+        for (const text of ["الف", "ب", "پ", "ت"]) await act({ action: "dm", text });
+        expect(await texts()).toEqual(["۱", "۲"]);
+        expect(await events("The AI assistant reached its daily limit")).toHaveLength(1);
+      } finally {
+        delete process.env.AI_MAX_REPLIES_PER_DAY;
+      }
+    });
+  });
+
   it("stops answering one person at the daily limit", async () => {
     await withAssistant(2);
     stubModel("۱", "۲", "۳");
@@ -504,12 +683,31 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     expect(await texts()).toEqual(["۱", "۲"]);
     expect(model.calls).toHaveLength(2);
   });
+  // Bulk SMS never reaches the test lab, so its contacts live on a real (Meta) connection.
+  async function smsAccount() {
+    const existing = await state.db.instagramAccount.findFirst({ where: { workspaceId: "ws", provider: "META" } });
+    return (
+      existing ??
+      (await state.db.instagramAccount.create({
+        data: { workspaceId: "ws", instagramId: "sms_ig", username: "shop", accessToken: "", provider: "META" },
+      }))
+    ).id;
+  }
   async function contactsWithPhones(phones: string[]) {
+    const instagramAccountId = await smsAccount();
     await state.db.contact.createMany({
-      data: phones.map((phone, i) => ({ instagramAccountId: accountId, igsid: `sms_${i}`, phone })),
+      data: phones.map((phone, i) => ({ instagramAccountId, igsid: `sms_${i}`, phone, smsConsent: true })),
     });
   }
+  // Sending is two steps: a preview hands back the one-time token the send needs.
+  async function startSms(args: { workspaceId: string; name: string; message: string; filter: { accountId?: string | null; tag?: string | null } }) {
+    const preview = await previewSmsCampaign({ workspaceId: args.workspaceId, message: args.message, filter: args.filter });
+    return createSmsCampaign({ ...args, previewToken: preview.token ?? undefined });
+  }
   async function smsPanel(provider = "KAVENEGAR") {
+    // The batching tests send more numbers than the default per-send limit allows.
+    process.env.SMS_MAX_RECIPIENTS = "1000";
+    process.env.SMS_MAX_RECIPIENTS_PER_DAY = "5000";
     process.env.ENCRYPTION_KEY ??= "0".repeat(64);
     await state.db.smsSettings.create({ data: { workspaceId: "ws", provider, apiKey: provider === "TEST" ? "" : encryptToken("k"), sender: "3000" } });
   }
@@ -536,7 +734,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones([...phones, "+98 912 000 0001", "۰۹۱۲۰۰۰۰۰۰۲"]); // two repeats in other forms
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "حراج", message: "حراج پاییزه", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "حراج", message: "حراج پاییزه", filter: {} });
     await drain();
     expect(sentTo.map((b) => b.length)).toEqual([100, 100, 30]);
     expect(new Set(sentTo.flat()).size).toBe(230);
@@ -548,7 +746,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 250 }, (_, i) => `0935${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar(418);
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     await drain();
     expect(sentTo).toHaveLength(1);
     expect(await smsStatuses(campaign.id)).toEqual({ FAILED: 250 });
@@ -563,7 +761,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
       calls++;
       throw new TypeError("socket hang up");
     });
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     await drain();
     await processSmsBatch(campaign.id, 5); // a stray retry
     expect(calls).toBe(1);
@@ -574,7 +772,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 150 }, (_, i) => `0901${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     state.jobs.push({ ...state.jobs[0] });
     await drain();
     await processSmsBatch(campaign.id, 0);
@@ -586,7 +784,7 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(Array.from({ length: 150 }, (_, i) => `0902${String(i).padStart(7, "0")}`));
     await smsPanel();
     const sentTo = stubKavenegar();
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: {} });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: {} });
     state.jobs = [];
     await Promise.all([processSmsBatch(campaign.id, 0), processSmsBatch(campaign.id, 0), processSmsBatch(campaign.id, 0)]);
     await drain();
@@ -599,10 +797,81 @@ describe.skipIf(!DATABASE_URL)("campaign flows through the worker on a real Post
     await contactsWithPhones(["09120000001", "09120000002"]);
     await state.db.contact.updateMany({ where: { phone: "09120000002" }, data: { tags: ["مشتری"] } });
     await smsPanel("TEST");
-    const campaign = await createSmsCampaign({ workspaceId: "ws", name: "x", message: "x", filter: { tag: "مشتری" } });
+    const campaign = await startSms({ workspaceId: "ws", name: "x", message: "x", filter: { tag: "مشتری" } });
     await drain();
     expect((await state.db.smsMessage.findMany({ where: { campaignId: campaign.id } })).map((m) => [m.phone, m.status])).toEqual([["09120000002", "SENT"]]);
   });
+  describe("bulk SMS safeguards", () => {
+    const send = (over: Partial<Parameters<typeof startSms>[0]> = {}) =>
+      startSms({ workspaceId: "ws", name: "x", message: "پیام آزمایشی", filter: {}, ...over });
+
+    it("reaches only contacts who agreed, never the test lab's pretend people (accountId is the lab here)", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await state.db.contact.create({ data: { instagramAccountId: await smsAccount(), igsid: "no_consent", phone: "09120000002" } });
+      await state.db.contact.create({ data: { instagramAccountId: accountId, igsid: "simfan", phone: "09120000003", smsConsent: true } });
+      await smsPanel("TEST");
+      expect(await recipientsFor("ws", {})).toEqual(["09120000001"]);
+    });
+
+    it("refuses to send without a preview, and the same preview cannot be used twice", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("TEST");
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: undefined })).rejects.toThrow("Preview this send first");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام", filter: {} });
+      await createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! })).rejects.toThrow("expired or was already used");
+      expect(await state.db.smsCampaign.count()).toBe(1);
+    });
+
+    it("a double click sends once: two requests with the same token race and only one wins", async () => {
+      await contactsWithPhones(["09120000001", "09120000002"]);
+      await smsPanel("TEST");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام", filter: {} });
+      const attempt = () => createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام", filter: {}, previewToken: preview.token! });
+      const results = await Promise.allSettled([attempt(), attempt(), attempt()]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(await state.db.smsCampaign.count()).toBe(1);
+    });
+
+    it("a token from one text cannot send another, and a changed audience needs a new preview", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("TEST");
+      const preview = await previewSmsCampaign({ workspaceId: "ws", message: "پیام اول", filter: {} });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام دوم", filter: {}, previewToken: preview.token! })).rejects.toThrow("changed since the preview");
+      const second = await previewSmsCampaign({ workspaceId: "ws", message: "پیام اول", filter: {} });
+      await state.db.contact.create({ data: { instagramAccountId: await smsAccount(), igsid: "late", phone: "09129999999", smsConsent: true } });
+      await expect(createSmsCampaign({ workspaceId: "ws", name: "x", message: "پیام اول", filter: {}, previewToken: second.token! })).rejects.toThrow("changed since the preview");
+    });
+
+    it("refuses more numbers than one send may reach, and more than the day allows", async () => {
+      await contactsWithPhones(Array.from({ length: 6 }, (_, i) => `0912000000${i}`));
+      await smsPanel("KAVENEGAR");
+      process.env.SMS_MAX_RECIPIENTS = "5";
+      const tooMany = await previewSmsCampaign({ workspaceId: "ws", message: "الف", filter: {} });
+      expect(tooMany).toMatchObject({ token: null, problem: expect.stringContaining("Too many recipients") });
+
+      process.env.SMS_MAX_RECIPIENTS = "10";
+      process.env.SMS_MAX_RECIPIENTS_PER_DAY = "8";
+      stubKavenegar();
+      await send({ message: "ب" });
+      const overDay = await previewSmsCampaign({ workspaceId: "ws", message: "ج", filter: {} });
+      expect(overDay).toMatchObject({ token: null, problem: "The daily SMS limit would be exceeded." });
+    });
+
+    it("refuses the same message twice in 24 hours, ignoring spacing, but allows it again after that", async () => {
+      await contactsWithPhones(["09120000001"]);
+      await smsPanel("KAVENEGAR");
+      stubKavenegar();
+      await send({ message: "حراج  پاییزه" });
+      expect(await previewSmsCampaign({ workspaceId: "ws", message: " حراج پاییزه ", filter: {} })).toMatchObject({
+        token: null,
+        problem: "This message was already sent in the last 24 hours.",
+      });
+      await state.db.smsCampaign.updateMany({ data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) } });
+      expect((await previewSmsCampaign({ workspaceId: "ws", message: "حراج پاییزه", filter: {} })).token).not.toBeNull();
+    });
+  });
+
   it("creates every template paused, so none answers real followers before the owner switches it on", async () => {
     for (const key of TEMPLATE_KEYS) await applyTemplate(key, { workspaceId: "ws", instagramAccountId: accountId, locale: "fa" });
     const active = await Promise.all([

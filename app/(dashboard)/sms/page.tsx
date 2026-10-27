@@ -9,6 +9,16 @@ import type { StaticMessageKey } from "@/lib/i18n";
 import { smsParts } from "@/lib/sms/providers";
 
 type Provider = "KAVENEGAR" | "SMSIR" | "MELIPAYAMAK" | "TEST";
+type SendPreview = {
+  count: number;
+  sample: string[];
+  provider: string;
+  limits: { perCampaign: number; perDay: number };
+  usedToday: number;
+  problem: string | null;
+  token: string | null;
+};
+
 type Campaign = { id: string; name: string; message: string; provider: string; status: string; stopReason: string | null; createdAt: string; counts: Record<string, number> };
 
 const PROVIDERS: [Provider, string][] = [
@@ -43,6 +53,8 @@ export default function SmsPage() {
   const [tags, setTags] = useState<string[]>([]);
   const [tag, setTag] = useState("");
   const [count, setCount] = useState<number | null>(null);
+  const [withoutConsent, setWithoutConsent] = useState(0);
+  const [preview, setPreview] = useState<SendPreview | null>(null);
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
   const [sendMsg, setSendMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -70,7 +82,9 @@ export default function SmsPage() {
     void fetch(`/api/sms/recipients?${filterQuery}`)
       .then((r) => r.json())
       .then((data) => {
-        if (!cancelled) setCount(data.count ?? 0);
+        if (cancelled) return;
+        setCount(data.count ?? 0);
+        setWithoutConsent(data.withoutConsent ?? 0);
       });
     void fetch(`/api/contacts?${accountId !== "all" ? `accountId=${encodeURIComponent(accountId)}` : ""}`)
       .then((r) => r.json())
@@ -127,18 +141,49 @@ export default function SmsPage() {
     );
   }
 
+  // A preview belongs to one text and one audience; changing either voids it.
+  useEffect(() => {
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
+    setPreview(null);
+  }, [message, accountId, tag]);
+
+  async function previewSend() {
+    setBusy(true);
+    setSendMsg(null);
+    try {
+      const response = await fetch("/api/sms/campaigns/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, accountId: accountId !== "all" ? accountId : null, tag: tag || null }),
+      });
+      const data = await response.json();
+      if (!response.ok) return setSendMsg({ ok: false, text: data.error ? t(data.error as StaticMessageKey) : t("Could not preview the send.") });
+      setPreview(data);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function send() {
-    if (!count) return;
-    if (!confirm(t("Send this SMS to {count} numbers? This cannot be undone.", { count }))) return;
+    if (!preview?.token) return;
+    if (!confirm(t("Send this SMS to {count} numbers? This cannot be undone.", { count: preview.count }))) return;
     setBusy(true);
     setSendMsg(null);
     try {
       const response = await fetch("/api/sms/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() || message.slice(0, 40), message, accountId: accountId !== "all" ? accountId : null, tag: tag || null }),
+        body: JSON.stringify({
+          name: name.trim() || message.slice(0, 40),
+          message,
+          accountId: accountId !== "all" ? accountId : null,
+          tag: tag || null,
+          previewToken: preview.token,
+        }),
       });
       const data = await response.json();
+      // The token is spent whatever the answer was.
+      setPreview(null);
       if (!response.ok) return setSendMsg({ ok: false, text: data.error ? t(data.error as StaticMessageKey) : t("Could not start the send.") });
       setSendMsg({ ok: true, text: t("Sending started.") });
       setMessage("");
@@ -235,6 +280,9 @@ export default function SmsPage() {
             </select>
             <span className="text-sm text-muted">{count === null ? "…" : t("{count} numbers", { count })}</span>
           </div>
+          {withoutConsent > 0 && (
+            <p className="text-xs text-muted">{t("{count} contacts with a number have not agreed to SMS and are left out.", { count: withoutConsent })}</p>
+          )}
           <input className={field} value={name} onChange={(e) => setName(e.target.value)} placeholder={t("Name (only you see it)")} />
           <textarea className={`${field} min-h-28`} value={message} maxLength={1000} onChange={(e) => setMessage(e.target.value)} placeholder={t("Write the SMS…")} />
           <p className="text-xs text-muted">
@@ -245,13 +293,39 @@ export default function SmsPage() {
             <button
               type="button"
               disabled={busy || !message.trim() || !count}
-              onClick={() => void send()}
-              className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              onClick={() => void previewSend()}
+              className="rounded-lg border border-border px-5 py-2.5 text-sm font-semibold disabled:opacity-50"
             >
-              {t("Send")}
+              {t("Preview")}
             </button>
             {sendMsg && <p className={`text-sm ${sendMsg.ok ? "text-success" : "text-error"}`}>{sendMsg.text}</p>}
           </div>
+          {preview && (
+            <div className="space-y-2 rounded-lg border border-border bg-background p-4 text-sm">
+              <p className="font-semibold">{t("{count} numbers will receive this SMS.", { count: preview.count })}</p>
+              <p dir="ltr" className="text-xs text-muted">{preview.sample.join("  ·  ")}</p>
+              <p className="text-xs text-muted">
+                {t("Limits: {perCampaign} per send, {perDay} per day; {used} used in the last 24 hours.", {
+                  perCampaign: preview.limits.perCampaign,
+                  perDay: preview.limits.perDay,
+                  used: preview.usedToday,
+                })}
+              </p>
+              {preview.provider === "TEST" && <p className="text-xs text-muted">{t("Test mode: recorded, nothing was sent.")}</p>}
+              {preview.problem ? (
+                <p className="text-sm text-error">{t(preview.problem as StaticMessageKey)}</p>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void send()}
+                  className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {t("Confirm and send")}
+                </button>
+              )}
+            </div>
+          )}
         </section>
       )}
 

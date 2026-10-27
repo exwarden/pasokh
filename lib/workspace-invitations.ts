@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 const INVITE_TTL_DAYS = 14;
 
@@ -8,6 +8,11 @@ export function normalizeInvitationEmail(email: string) {
 
 export function generateInvitationToken() {
   return randomBytes(18).toString("base64url");
+}
+
+/** What is stored: the token is a bearer secret, so only its hash is kept. */
+export function hashInvitationToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 export function getInvitationExpiry() {

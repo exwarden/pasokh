@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
+import { checkPublicHttpsUrl } from "@/lib/net/safe-url";
 
 export const KNOWLEDGE_MAX = 20_000;
 
@@ -9,7 +10,20 @@ export const assistantInputSchema = z
     enabled: z.boolean(),
     provider: z.enum(["ANTHROPIC", "OPENAI"]),
     model: z.string().trim().min(1).max(100),
-    baseUrl: z.string().trim().url().max(300).nullable().optional(),
+    baseUrl: z
+      .string()
+      .trim()
+      .max(300)
+      .nullable()
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) return;
+        try {
+          checkPublicHttpsUrl(value);
+        } catch (error) {
+          ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "The address is not valid." });
+        }
+      }),
     /** Empty keeps the stored key; the stored key is never sent to the browser. */
     apiKey: z.string().trim().max(500).optional(),
     persona: z.string().max(4000).default(""),

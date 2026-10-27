@@ -9,6 +9,12 @@ export type FormQuestion = {
   kind: QuestionKind;
   choices?: string[];
   saveTo?: ContactField;
+  /**
+   * Choice questions only: the first option means "yes, send me SMS" and the
+   * others mean no. The answer sets the contact's SMS consent, with the time
+   * and this form as the source.
+   */
+  grantsSmsConsent?: boolean;
 };
 
 /** Persian and Arabic-Indic digits to ASCII: people type «۰۹۱۲…» as often as "0912…". */

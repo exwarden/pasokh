@@ -7,6 +7,8 @@ import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser, getPrimaryWorkspace } from "@/lib/workspace";
 import { isEmailAllowedToSignIn } from "@/lib/env";
 import { checkCredentials } from "@/lib/users/accounts";
+import { clientIpFromHeaders } from "@/lib/net/client-ip";
+import { isSessionCurrent } from "@/lib/users/session-version";
 
 type AdapterPrismaClient = Parameters<typeof PrismaAdapter>[0];
 
@@ -34,9 +36,12 @@ class ThrottledSignin extends CredentialsSignin {
   code = "throttled";
 }
 
+class SigninUnavailable extends CredentialsSignin {
+  code = "unavailable";
+}
+
 function clientIp(request: Request): string | null {
-  const forwarded = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for");
-  return forwarded?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
+  return clientIpFromHeaders(request.headers);
 }
 
 const emailProviders = smtpServer
@@ -58,6 +63,7 @@ export const authConfig = {
         const result = await checkCredentials(email, password, clientIp(request));
         if (!result.ok) {
           if (result.reason === "throttled") throw new ThrottledSignin();
+          if (result.reason === "unavailable") throw new SigninUnavailable();
           return null;
         }
         if (!isEmailAllowedToSignIn(result.user.email)) return null;
@@ -69,11 +75,14 @@ export const authConfig = {
   callbacks: {
     // For magic links this runs before the link is sent, so a blocked address
     // never receives one, and again when the link is verified.
-    async signIn({ user }) {
-      return isEmailAllowedToSignIn(user?.email);
+    async signIn({ user, account }) {
+      return isEmailAllowedToSignIn(user?.email, { viaEmailLink: account?.type === "email" });
     },
     async jwt({ token, user }) {
-      if (user?.id) token.sub = user.id;
+      if (user?.id) {
+        token.sub = user.id;
+        token.sv = (user as { sessionVersion?: number }).sessionVersion ?? 0;
+      }
       return token;
     },
     // Sessions are JWTs (Auth.js only supports password sign-in that way), so a
@@ -83,9 +92,9 @@ export const authConfig = {
     async session({ session, token }) {
       const userId = token.sub;
       const user = userId
-        ? await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, name: true } })
+        ? await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, name: true, sessionVersion: true } })
         : null;
-      if (!user) return { ...session, user: undefined } as unknown as typeof session;
+      if (!user || !isSessionCurrent(token.sv, user.sessionVersion)) return { ...session, user: undefined } as unknown as typeof session;
       session.user.id = user.id;
       session.user.email = user.email ?? session.user.email;
       session.user.name = user.name ?? session.user.name;

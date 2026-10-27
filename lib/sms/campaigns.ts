@@ -4,6 +4,17 @@ import { decryptToken } from "@/lib/meta/oauth";
 import { getDMQueue, SMS_JOB_NAME } from "@/lib/queue/client";
 import { contactWhere } from "@/lib/contacts/list";
 import { normalizePhone } from "@/lib/forms/answers";
+import {
+  SMS_REPEAT_WINDOW_MS,
+  SmsGuardError,
+  type SmsGuardMessage,
+  consumePreviewToken,
+  fingerprintPhones,
+  hashSmsMessage,
+  issuePreviewToken,
+  maskPhone,
+  smsLimits,
+} from "./guards";
 import { SMS_BATCH, SmsRefusedError, SmsUnclearError, sendSms, type SmsConfig, type SmsProviderName } from "./providers";
 
 export async function smsConfig(workspaceId: string): Promise<SmsConfig | null> {
@@ -16,41 +27,130 @@ export async function smsConfig(workspaceId: string): Promise<SmsConfig | null> 
   };
 }
 
-/** The phones a filter selects now, normalised and without repeats. */
+/**
+ * The phones a filter selects now, normalised and without repeats. Only
+ * contacts who agreed to SMS, and never the test lab's pretend people.
+ */
 export async function recipientsFor(workspaceId: string, filter: { accountId?: string | null; tag?: string | null }) {
   const contacts = await prisma.contact.findMany({
-    where: contactWhere({ workspaceId, accountId: filter.accountId, tag: filter.tag, hasPhone: true }),
+    where: {
+      ...contactWhere({ workspaceId, accountId: filter.accountId, tag: filter.tag, hasPhone: true }),
+      smsConsent: true,
+      instagramAccount: { workspaceId, provider: { not: "SIMULATOR" } },
+    },
     select: { phone: true },
     take: 100_000,
   });
   return [...new Set(contacts.map((c) => (c.phone ? normalizePhone(c.phone) : null)).filter((p): p is string => Boolean(p)))];
 }
 
-/** Fixes the recipients and queues the first batch. */
+type Filter = { accountId?: string | null; tag?: string | null };
+
+/** How many numbers the workspace has already put in sends during the last 24 hours. */
+async function usedToday(db: Pick<typeof prisma, "smsMessage">, workspaceId: string): Promise<number> {
+  return db.smsMessage.count({
+    where: {
+      campaign: { workspaceId, provider: { not: "TEST" }, createdAt: { gte: new Date(Date.now() - SMS_REPEAT_WINDOW_MS) } },
+      status: { not: "FAILED" },
+    },
+  });
+}
+
+/**
+ * Looks at what a send would do and hands back a one-time token that
+ * createSmsCampaign requires. Nothing is sent or stored.
+ */
+export async function previewSmsCampaign({ workspaceId, message, filter }: { workspaceId: string; message: string; filter: Filter }) {
+  const settings = await prisma.smsSettings.findUnique({ where: { workspaceId } });
+  if (!settings) throw new Error("Set up an SMS provider first.");
+  const phones = await recipientsFor(workspaceId, filter);
+  const messageHash = hashSmsMessage(message);
+  const limits = smsLimits();
+  const used = settings.provider === "TEST" ? 0 : await usedToday(prisma, workspaceId);
+  const problem = await sendProblem({ db: prisma, workspaceId, phones, messageHash, provider: settings.provider, used });
+  const token = problem
+    ? null
+    : await issuePreviewToken({ workspaceId, messageHash, recipients: fingerprintPhones(phones), count: phones.length });
+  return {
+    count: phones.length,
+    sample: phones.slice(0, 3).map(maskPhone),
+    provider: settings.provider,
+    limits,
+    usedToday: used,
+    problem,
+    token,
+  };
+}
+
+async function sendProblem({
+  db,
+  workspaceId,
+  phones,
+  messageHash,
+  provider,
+  used,
+}: {
+  db: Pick<typeof prisma, "smsCampaign">;
+  workspaceId: string;
+  phones: string[];
+  messageHash: string;
+  provider: string;
+  used: number;
+}): Promise<SmsGuardMessage | null> {
+  const limits = smsLimits();
+  if (phones.length === 0) return "No contact with a phone number and SMS consent matches this filter.";
+  if (phones.length > limits.perCampaign) return "Too many recipients for one send. Narrow the filter, for example with a tag.";
+  // Test mode sends nothing, so repeats and the daily total do not matter there.
+  if (provider === "TEST") return null;
+  if (used + phones.length > limits.perDay) return "The daily SMS limit would be exceeded.";
+  const repeat = await db.smsCampaign.findFirst({
+    where: { workspaceId, messageHash, provider: { not: "TEST" }, createdAt: { gte: new Date(Date.now() - SMS_REPEAT_WINDOW_MS) } },
+    select: { id: true },
+  });
+  return repeat ? "This message was already sent in the last 24 hours." : null;
+}
+
+/**
+ * Fixes the recipients and queues the first batch, but only with the token a
+ * preview of exactly this text and these numbers returned, once. The checks
+ * and the insert share a per-workspace lock, so two sends cannot both slip
+ * under the daily limit or the repeat check.
+ */
 export async function createSmsCampaign({
   workspaceId,
   name,
   message,
   filter,
+  previewToken,
 }: {
   workspaceId: string;
   name: string;
   message: string;
-  filter: { accountId?: string | null; tag?: string | null };
+  filter: Filter;
+  previewToken?: string;
 }) {
   const settings = await prisma.smsSettings.findUnique({ where: { workspaceId } });
   if (!settings) throw new Error("Set up an SMS provider first.");
   const phones = await recipientsFor(workspaceId, filter);
-  if (phones.length === 0) throw new Error("No contact matching this filter has a phone number.");
-  const campaign = await prisma.smsCampaign.create({
-    data: {
-      workspaceId,
-      name,
-      message,
-      provider: settings.provider,
-      filter: { accountId: filter.accountId ?? null, tag: filter.tag ?? null },
-      messages: { createMany: { data: phones.map((phone) => ({ phone })), skipDuplicates: true } },
-    },
+  const messageHash = hashSmsMessage(message);
+
+  const campaign = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sms-send:${workspaceId}`}))`;
+    const used = settings.provider === "TEST" ? 0 : await usedToday(tx, workspaceId);
+    const problem = await sendProblem({ db: tx, workspaceId, phones, messageHash, provider: settings.provider, used });
+    if (problem) throw new SmsGuardError(problem);
+    await consumePreviewToken(previewToken, { workspaceId, messageHash, recipients: fingerprintPhones(phones), count: phones.length });
+    return tx.smsCampaign.create({
+      data: {
+        workspaceId,
+        name,
+        message,
+        messageHash,
+        provider: settings.provider,
+        filter: { accountId: filter.accountId ?? null, tag: filter.tag ?? null },
+        messages: { createMany: { data: phones.map((phone) => ({ phone })), skipDuplicates: true } },
+      },
+    });
   });
   await getDMQueue().add(SMS_JOB_NAME, { campaignId: campaign.id }, { jobId: `sms_${campaign.id}_0` });
   return campaign;
@@ -73,6 +173,12 @@ export async function processSmsBatch(campaignId: string, round = 0): Promise<"S
   const config = await smsConfig(campaign.workspaceId);
   if (!config) {
     await stop(campaignId, "The SMS provider settings were removed");
+    return "STOPPED";
+  }
+  // The checks at creation (test mode, daily cap, repeat guard) were made for
+  // this provider, and the stored key belongs to the one in the settings now.
+  if (config.provider !== campaign.provider) {
+    await stop(campaignId, "The SMS provider was changed after this send was created");
     return "STOPPED";
   }
 

@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import type { Workspace, WorkspaceRole } from "@/app/generated/prisma/client";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
@@ -29,6 +30,17 @@ export function canManageWorkspace(role: WorkspaceRole) {
 
 export function canManageBilling(role: WorkspaceRole) {
   return role === "OWNER";
+}
+
+/**
+ * For routes that change or remove shared configuration or send in bulk: a
+ * plain member may read, answer in the inbox and edit contacts, but not do
+ * these. Returns the 403 to send, or null when the caller may proceed.
+ */
+export function managerOnly(context: { role: WorkspaceRole }): NextResponse | null {
+  return canManageWorkspace(context.role)
+    ? null
+    : NextResponse.json({ error: "Only owners and admins can change this" }, { status: 403 });
 }
 
 export async function getCurrentWorkspaceContext(): Promise<WorkspaceContext | null> {

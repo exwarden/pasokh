@@ -146,6 +146,9 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     for (const event of readEvents) {
       const openingLogs = await prisma.dmLog.findMany({
         where: {
+          // Only this account's own workspace: the id alone names a person on
+          // Instagram, not a tenant.
+          workspaceId: accountMap.get(event.instagramAccountId)?.workspaceId,
           commenterId: event.userId,
           status: "SENT",
           automation: {

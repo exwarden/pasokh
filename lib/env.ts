@@ -36,6 +36,23 @@ export function getEncryptionKeyHex(): string {
   return value;
 }
 
+/**
+ * Keys that stored secrets may still be encrypted with, after ENCRYPTION_KEY
+ * was changed: ENCRYPTION_KEY_PREVIOUS, one or more 32-byte hex keys separated
+ * by commas. Used only to read; everything new is written with ENCRYPTION_KEY.
+ * See npm run keys:rotate.
+ */
+export function getPreviousEncryptionKeysHex(): string[] {
+  return (process.env.ENCRYPTION_KEY_PREVIOUS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean)
+    .map((key) => {
+      if (!HEX_32_BYTE.test(key)) throw new Error("ENCRYPTION_KEY_PREVIOUS must be 32-byte hex keys separated by commas");
+      return key;
+    });
+}
+
 // Env vars that must be present before an Instagram OAuth round trip can even
 // start. Checked up front so a self-hoster with a half-filled .env gets the
 // variable names back instead of an unhandled throw from requireEnv().
@@ -66,18 +83,22 @@ export function getMetaGraphApiVersion(): string {
  * A self-hosted instance on a public domain is open to signup: the email
  * provider creates an account for whoever asks for a magic link, and that
  * account gets its own workspace. ALLOWED_EMAILS closes it to a comma-separated
- * list of addresses. Left unset, sign-in behaves exactly as before, so an
- * existing deployment is unaffected.
+ * list of addresses. Left unset, password sign-in behaves as before, but
+ * sign-in by emailed link is refused (see below).
  */
 export function isEmailAllowedToSignIn(
-  email: string | null | undefined
+  email: string | null | undefined,
+  { viaEmailLink = false }: { viaEmailLink?: boolean } = {}
 ): boolean {
   const allowed = (process.env.ALLOWED_EMAILS ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
 
-  if (allowed.length === 0) return true;
+  // An emailed link creates the account if the address is new, so with no
+  // list it would let anyone in. That sign-in fails closed; passwords only
+  // work for accounts that already exist, so they keep the old behaviour.
+  if (allowed.length === 0) return !viaEmailLink;
   if (!email) return false;
   return allowed.includes(email.toLowerCase());
 }

@@ -32,7 +32,11 @@ vi.mock("@/lib/queue/client", () => ({
   getRedisConnection: () => ({ del: async () => 0, get: async () => null, multi: () => ({ incr() { return this; }, expire() { return this; }, exec: async () => [] }) }),
 }));
 
+import { hashInvitationToken } from "../lib/workspace-invitations";
 import { AccountError, createFirstOwner, createInvitedUser, needsFirstRunSetup } from "../lib/users/accounts";
+
+const SETUP_TOKEN = "test-setup-token-0123456789";
+process.env.SETUP_TOKEN = SETUP_TOKEN;
 
 const schema = `first_run_${randomBytes(4).toString("hex")}`;
 let sql: Client;
@@ -43,6 +47,7 @@ const owner = (email: string) => ({
   password: "good password",
   confirm: "good password",
   workspaceName: "Shop",
+  setupToken: SETUP_TOKEN,
 });
 
 describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
@@ -66,6 +71,12 @@ describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
 
   beforeEach(async () => {
     await sql.query(`TRUNCATE "User" CASCADE`);
+  });
+
+  it("a wrong or missing setup token creates nothing, however correct the rest is", async () => {
+    await expect(createFirstOwner({ ...owner("x@shop.ir"), setupToken: "guess" })).rejects.toThrow("The setup token is wrong.");
+    await expect(createFirstOwner({ ...owner("x@shop.ir"), setupToken: "" })).rejects.toThrow("The setup token is wrong.");
+    expect(await needsFirstRunSetup()).toBe(true);
   });
 
   it("two setup forms submitted at the same moment create exactly one owner", async () => {
@@ -99,7 +110,7 @@ describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
         workspaceId: workspace.id,
         email: "teammate@shop.ir",
         role: "MEMBER",
-        token: "invite-token",
+        tokenHash: hashInvitationToken("invite-token"),
         expiresAt: new Date(Date.now() + 86_400_000),
       },
     });
@@ -114,14 +125,14 @@ describe.skipIf(!DATABASE_URL)("first-run setup on a real Postgres", () => {
     expect(await state.db.workspace.count()).toBe(1);
     expect(await state.db.workspaceMember.findFirst({ where: { userId: teammateId }, select: { workspaceId: true, role: true } }))
       .toEqual({ workspaceId: workspace.id, role: "MEMBER" });
-    expect((await state.db.workspaceInvitation.findUniqueOrThrow({ where: { token: "invite-token" } })).status).toBe("ACCEPTED");
+    expect((await state.db.workspaceInvitation.findUniqueOrThrow({ where: { tokenHash: hashInvitationToken("invite-token") } })).status).toBe("ACCEPTED");
   });
 
   it("does not let an invitation link reset the password of an existing account", async () => {
     const { userId } = await createFirstOwner(owner("owner@shop.ir"));
     const workspace = await state.db.workspace.findFirstOrThrow({ where: { ownerId: userId } });
     await state.db.workspaceInvitation.create({
-      data: { workspaceId: workspace.id, email: "owner@shop.ir", role: "ADMIN", token: "self", expiresAt: new Date(Date.now() + 86_400_000) },
+      data: { workspaceId: workspace.id, email: "owner@shop.ir", role: "ADMIN", tokenHash: hashInvitationToken("self"), expiresAt: new Date(Date.now() + 86_400_000) },
     });
     await expect(
       createInvitedUser({ token: "self", name: "x", password: "attacker pass", confirm: "attacker pass" }),

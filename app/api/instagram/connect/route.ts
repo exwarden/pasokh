@@ -25,7 +25,7 @@ export async function GET() {
   }
 
   const redirectUri = `${getBaseUrl()}/api/instagram/callback`;
-  const state = createOAuthState(context.workspaceId);
+  const state = createOAuthState(context.workspaceId, context.userId);
 
   return NextResponse.redirect(getAuthorizationUrl(redirectUri, state));
 }

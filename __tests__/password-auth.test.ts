@@ -3,18 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const redis = vi.hoisted(() => {
   const store = new Map<string, number>();
   const multi = () => {
-    const ops: Array<() => void> = [];
+    const ops: Array<() => unknown> = [];
     const chain = {
       incr(key: string) {
-        ops.push(() => store.set(key, (store.get(key) ?? 0) + 1));
+        ops.push(() => store.set(key, (store.get(key) ?? 0) + 1).get(key));
         return chain;
       },
       expire() {
+        ops.push(() => 1);
         return chain;
       },
       async exec() {
-        ops.forEach((op) => op());
-        return [];
+        return ops.map((op) => [null, op()]);
       },
     };
     return chain;
@@ -24,24 +24,27 @@ const redis = vi.hoisted(() => {
     client: {
       get: async (key: string) => (store.has(key) ? String(store.get(key)) : null),
       del: async (key: string) => store.delete(key),
+      decr: async (key: string) => store.set(key, (store.get(key) ?? 0) - 1).get(key),
       multi,
     },
   };
 });
 vi.mock("@/lib/queue/client", () => ({ getRedisConnection: () => redis.client }));
 
-const db = vi.hoisted(() => ({ users: new Map<string, { id: string; email: string; name: string | null; passwordHash: string | null }>() }));
+const db = vi.hoisted(() => ({ users: new Map<string, { id: string; email: string; name: string | null; passwordHash: string | null; sessionVersion?: number }>(), updates: [] as unknown[] }));
 vi.mock("@/lib/db/client", () => ({
   prisma: {
     user: {
       findUnique: async ({ where }: { where: { email: string } }) => db.users.get(where.email) ?? null,
+      updateMany: async (args: unknown) => (db.updates.push(args), { count: 1 }),
     },
   },
 }));
 vi.mock("@/lib/workspace", () => ({ ensureWorkspaceForUser: vi.fn() }));
 
 import { hashPassword, passwordProblem, verifyPassword } from "../lib/users/password";
-import { accountErrorFromQuery, checkCredentials } from "../lib/users/accounts";
+import { accountErrorFromQuery, checkCredentials, setPassword } from "../lib/users/accounts";
+import { isSessionCurrent } from "../lib/users/session-version";
 import { safeCallbackUrl } from "../lib/users/redirect";
 
 describe("password hashing", () => {
@@ -50,6 +53,12 @@ describe("password hashing", () => {
     expect(stored.startsWith("scrypt$32768$8$1$")).toBe(true);
     expect(await verifyPassword("correct horse", stored)).toBe(true);
     expect(await verifyPassword("correct horsf", stored)).toBe(false);
+  });
+
+  it("keeps working when far more hashes are requested at once than may run together", async () => {
+    const stored = await hashPassword("burst password");
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => verifyPassword(i % 2 ? "burst password" : "wrong", stored)));
+    expect(results).toEqual(Array.from({ length: 12 }, (_, i) => i % 2 === 1));
   });
 
   it("salts every hash, so equal passwords do not produce equal hashes", async () => {
@@ -92,7 +101,7 @@ describe("credential checks", { timeout: 30_000 }, () => {
 
   it("signs in regardless of email case or surrounding spaces", async () => {
     const result = await checkCredentials("  Owner@Shop.IR ", "good password", "1.2.3.4");
-    expect(result).toEqual({ ok: true, user: { id: "u1", email: "owner@shop.ir", name: "Owner" } });
+    expect(result).toEqual({ ok: true, user: { id: "u1", email: "owner@shop.ir", name: "Owner", sessionVersion: 0 } });
   });
 
   it("gives the same answer for an unknown email as for a wrong password", async () => {
@@ -105,9 +114,25 @@ describe("credential checks", { timeout: 30_000 }, () => {
     expect(await checkCredentials("magic@shop.ir", "", null)).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("locks an email after 5 failures, even with the right password, until the window passes", async () => {
-    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", `10.0.0.${i}`);
-    expect(await checkCredentials("owner@shop.ir", "good password", "10.0.0.99")).toEqual({ ok: false, reason: "throttled" });
+  it("locks an email after 5 failures from one place, even with the right password, until the window passes", async () => {
+    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", "10.0.0.1");
+    expect(await checkCredentials("owner@shop.ir", "good password", "10.0.0.1")).toEqual({ ok: false, reason: "throttled" });
+  });
+
+  it("an attacker's failures from one address cannot lock the real owner out from another", async () => {
+    for (let i = 0; i < 12; i++) await checkCredentials("owner@shop.ir", "wrong", "6.6.6.6");
+    expect(await checkCredentials("owner@shop.ir", "good password", "6.6.6.6")).toEqual({ ok: false, reason: "throttled" });
+    expect((await checkCredentials("owner@shop.ir", "good password", "203.0.113.7")).ok).toBe(true);
+  });
+
+  it("guessing spread over many addresses still stops at the per-email ceiling", async () => {
+    for (let i = 0; i < 50; i++) await checkCredentials("owner@shop.ir", "wrong", `198.51.100.${i}`);
+    expect(await checkCredentials("owner@shop.ir", "good password", "203.0.113.7")).toEqual({ ok: false, reason: "throttled" });
+  });
+
+  it("with no trusted address the email alone is locked after 5 failures, as before", async () => {
+    for (let i = 0; i < 5; i++) await checkCredentials("owner@shop.ir", "wrong", null);
+    expect(await checkCredentials("owner@shop.ir", "good password", null)).toEqual({ ok: false, reason: "throttled" });
   });
 
   it("locks an address that sprays many accounts", async () => {
@@ -121,6 +146,64 @@ describe("credential checks", { timeout: 30_000 }, () => {
     expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
     for (let i = 0; i < 4; i++) await checkCredentials("owner@shop.ir", "wrong", null);
     expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
+  });
+});
+
+describe("when Redis does not answer", { timeout: 30_000 }, () => {
+  beforeEach(async () => {
+    redis.store.clear();
+    db.users.clear();
+    db.users.set("owner@shop.ir", { id: "u1", email: "owner@shop.ir", name: "Owner", passwordHash: await hashPassword("good password") });
+  });
+
+  it("refuses sign-in quickly with its own reason, even with the right password, instead of hanging or letting guesses through", async () => {
+    const original = redis.client.multi;
+    redis.client.multi = () => ({ incr() { return this; }, expire() { return this; }, exec: () => new Promise(() => {}) }) as never;
+    try {
+      const started = Date.now();
+      expect(await checkCredentials("owner@shop.ir", "good password", "1.2.3.4")).toEqual({ ok: false, reason: "unavailable" });
+      expect(Date.now() - started).toBeLessThan(3000);
+    } finally {
+      redis.client.multi = original;
+    }
+  });
+
+  it("does the same when Redis errors", async () => {
+    const original = redis.client.multi;
+    redis.client.multi = () => {
+      throw new Error("ECONNREFUSED");
+    };
+    try {
+      expect(await checkCredentials("owner@shop.ir", "good password", null)).toEqual({ ok: false, reason: "unavailable" });
+    } finally {
+      redis.client.multi = original;
+    }
+  });
+
+  it("a correct password still signs in when only the counter reset fails afterwards", async () => {
+    const original = redis.client.del;
+    redis.client.del = () => new Promise(() => {});
+    try {
+      expect((await checkCredentials("owner@shop.ir", "good password", null)).ok).toBe(true);
+    } finally {
+      redis.client.del = original;
+    }
+  });
+});
+
+describe("sessions after a password change", () => {
+  it("changing the password bumps the session counter, which signs out tokens issued before it", async () => {
+    db.updates.length = 0;
+    await setPassword("owner@shop.ir", "a new good password");
+    expect(db.updates[0]).toMatchObject({ data: { sessionVersion: { increment: 1 } } });
+  });
+
+  it("a token is current only while its counter equals the user's, and an old token without one counts as 0", () => {
+    expect(isSessionCurrent(0, 0)).toBe(true);
+    expect(isSessionCurrent(undefined, 0)).toBe(true);
+    expect(isSessionCurrent(0, 1)).toBe(false);
+    expect(isSessionCurrent(undefined, 2)).toBe(false);
+    expect(isSessionCurrent("1", 1)).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { commandData, presentCommand, readCommandInput } from "@/lib/commands/api";
 
 export const runtime = "nodejs";
@@ -20,6 +20,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const read = await readCommandInput(request, context.workspaceId);
   if ("response" in read) return read.response;
   const command = await prisma.command.create({ data: { workspaceId: context.workspaceId, ...commandData(read.input) } });

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { labState, runLabAction } from "@/lib/simulator/lab";
 
 export const runtime = "nodejs";
@@ -20,12 +20,16 @@ const actionSchema = z.discriminatedUnion("action", [
 export async function GET() {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   return NextResponse.json(await labState(context.workspaceId));
 }
 
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const parsed = actionSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   await runLabAction(context.workspaceId, parsed.data);

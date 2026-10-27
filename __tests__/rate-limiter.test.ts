@@ -7,8 +7,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGet, mockEval, mockDel, mockDecr } = vi.hoisted(() => ({
+const { mockGet, mockEval, mockDel, mockDecr, mockZcount, mockZpopmax, mockZcard } = vi.hoisted(() => ({
   mockGet: vi.fn(),
+  mockZcount: vi.fn(),
+  mockZpopmax: vi.fn(),
+  mockZcard: vi.fn(),
   mockEval: vi.fn(),
   mockDel: vi.fn(),
   mockDecr: vi.fn(),
@@ -22,6 +25,9 @@ vi.mock("ioredis", () => {
     this.eval = mockEval;
     this.del = mockDel;
     this.decr = mockDecr;
+    this.zcount = mockZcount;
+    this.zpopmax = mockZpopmax;
+    this.zcard = mockZcard;
     return this;
   });
   return { default: MockRedis };
@@ -43,7 +49,7 @@ beforeEach(() => {
 
 describe("checkRateLimit", () => {
   it("should allow when count is below limit", async () => {
-    mockGet.mockResolvedValue("50");
+    mockZcount.mockResolvedValue(50);
 
     const result = await checkRateLimit("account_123");
 
@@ -56,7 +62,7 @@ describe("checkRateLimit", () => {
   });
 
   it("should allow when no previous count exists", async () => {
-    mockGet.mockResolvedValue(null);
+    mockZcount.mockResolvedValue(0);
 
     const result = await checkRateLimit("account_123");
 
@@ -66,7 +72,7 @@ describe("checkRateLimit", () => {
   });
 
   it("should deny when count reaches the limit", async () => {
-    mockGet.mockResolvedValue(String(RATE_LIMIT_MAX));
+    mockZcount.mockResolvedValue(RATE_LIMIT_MAX);
 
     const result = await checkRateLimit("account_123");
 
@@ -76,7 +82,7 @@ describe("checkRateLimit", () => {
   });
 
   it("should skip after max requeue attempts", async () => {
-    mockGet.mockResolvedValue(String(RATE_LIMIT_MAX));
+    mockZcount.mockResolvedValue(RATE_LIMIT_MAX);
 
     const result = await checkRateLimit("account_123", 3);
 
@@ -95,9 +101,11 @@ describe("reserveDMSlot", () => {
     expect(mockEval).toHaveBeenCalledWith(
       expect.any(String),
       1,
-      "rate:dm:account_123",
+      "rate:dm:z:account_123",
+      expect.any(Number),
+      3600 * 1000,
       RATE_LIMIT_MAX,
-      3600
+      expect.stringMatching(/^\d+-[0-9a-f]{8}$/)
     );
     expect(result.allowed).toBe(true);
     expect(result.reserved).toBe(true);
@@ -139,21 +147,23 @@ describe("incrementDMCounter", () => {
 });
 
 describe("releaseDMSlot", () => {
-  it("hands a reserved slot back and returns the new count", async () => {
-    mockDecr.mockResolvedValue(49);
+  it("hands the newest reservation back and returns the count that remains", async () => {
+    mockZcard.mockResolvedValue(49);
 
     const count = await releaseDMSlot("account_123");
 
-    expect(mockDecr).toHaveBeenCalledWith("rate:dm:account_123");
+    expect(mockZpopmax).toHaveBeenCalledWith("rate:dm:z:account_123");
     expect(count).toBe(49);
   });
 
-  it("clamps to zero and clears the key when nothing was reserved", async () => {
-    mockDecr.mockResolvedValue(-1);
+  it("is harmless when nothing was reserved", async () => {
+    mockZcard.mockResolvedValue(0);
+    expect(await releaseDMSlot("account_123")).toBe(0);
+  });
+});
 
-    const count = await releaseDMSlot("account_123");
-
-    expect(count).toBe(0);
-    expect(mockDel).toHaveBeenCalledWith("rate:dm:account_123");
+describe("the cap", () => {
+  it("is 600 an hour, below Meta's documented 750", () => {
+    expect(RATE_LIMIT_MAX).toBe(600);
   });
 });

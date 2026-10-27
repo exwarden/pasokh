@@ -13,11 +13,11 @@
 set -u
 
 BASE_URL="${CRON_BASE_URL:-http://web:3000}"
-# Same fallback as the routes themselves: they accept either secret.
-SECRET="${CRON_SECRET:-${NEXTAUTH_SECRET:-}}"
+# Only CRON_SECRET opens the routes (16+ characters); no other secret is a fallback.
+SECRET="${CRON_SECRET:-}"
 
-if [ -z "$SECRET" ]; then
-  echo "[cron] neither CRON_SECRET nor NEXTAUTH_SECRET is set — the routes would answer 401" >&2
+if [ "${#SECRET}" -lt 16 ]; then
+  echo "[cron] CRON_SECRET is missing or shorter than 16 characters — the routes would answer 401" >&2
   exit 1
 fi
 
@@ -65,6 +65,7 @@ while true; do
     last_daily="$today"
     call refresh-tokens
     call snapshot-followers
+    call cleanup
   fi
 
   # Half a minute: short enough never to skip a slot, long enough to stay idle.

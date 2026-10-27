@@ -15,15 +15,24 @@ interface HealthCheck {
   detail?: string;
 }
 
+// This endpoint is public (uptime monitors and the installer call it), so it
+// says which check failed but never why: connection errors carry host names
+// and usernames. The reason goes to the server log.
+function logUnavailable(check: string, error: unknown): string {
+  console.error(`[health] ${check} check failed:`, error instanceof Error ? error.message : error);
+  return "unavailable";
+}
+
+function unavailable(check: string, error: unknown): HealthCheck {
+  return { status: "error", detail: logUnavailable(check, error) };
+}
+
 async function checkDatabase(): Promise<HealthCheck> {
   try {
     await prisma.$queryRaw`SELECT 1`;
     return { status: "ok" };
   } catch (error) {
-    return {
-      status: "error",
-      detail: error instanceof Error ? error.message : "Database check failed",
-    };
+    return unavailable("database", error);
   }
 }
 
@@ -32,10 +41,7 @@ async function checkRedis(): Promise<HealthCheck> {
     const pong = await getRedisConnection().ping();
     return { status: pong === "PONG" ? "ok" : "error", detail: pong };
   } catch (error) {
-    return {
-      status: "error",
-      detail: error instanceof Error ? error.message : "Redis check failed",
-    };
+    return unavailable("redis", error);
   }
 }
 
@@ -73,10 +79,7 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
     }
     return { status: "ok", counts };
   } catch (error) {
-    return {
-      status: "error",
-      detail: error instanceof Error ? error.message : "Queue check failed",
-    };
+    return unavailable("queue", error);
   }
 }
 
@@ -89,7 +92,7 @@ export async function GET() {
       healthy: false,
       heartbeat: null,
       ageMs: null,
-      error: error instanceof Error ? error.message : "Worker check failed",
+      error: logUnavailable("worker", error),
     })),
   ]);
 

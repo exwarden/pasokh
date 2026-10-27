@@ -18,6 +18,8 @@ model User {
   /// scrypt hash (lib/auth/password.ts). Null for accounts that only ever
   /// signed in by magic link.
   passwordHash  String?
+  /// Bumped when the password changes; sessions issued earlier are signed out.
+  sessionVersion Int      @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -118,7 +120,8 @@ model WorkspaceInvitation {
   workspaceId     String
   email           String
   role            WorkspaceRole             @default(MEMBER)
-  token           String                    @unique
+  /// SHA-256 of the invitation token; the token itself is shown once, on creation.
+  tokenHash       String                    @unique
   status          WorkspaceInvitationStatus @default(PENDING)
   invitedByUserId String?
   expiresAt       DateTime
@@ -286,6 +289,7 @@ model DmLog {
   @@unique([automationId, commentId])
   @@index([workspaceId])
   @@index([automationId])
+  @@index([automationId, commenterId])
   @@index([instagramAccountId])
   @@index([status])
 }
@@ -490,6 +494,12 @@ model Contact {
   phone              String?
   email              String?
   tags               String[]  @default([])
+  /// Agreed to receive SMS. False until they say so (a form question) or the
+  /// owner records it; bulk SMS reaches only contacts where this is true.
+  smsConsent         Boolean   @default(false)
+  smsConsentAt       DateTime?
+  /// Where the consent came from: "form:<id>" or "manual:<userId>".
+  smsConsentSource   String?
   firstSeenAt        DateTime  @default(now())
   /// Their last DM, quick-reply or button tap. Messages to them are accepted
   /// for 24 hours after it.
@@ -780,7 +790,8 @@ model AiReply {
   triggerId   String
   question    String
   answer      String?
-  /// PENDING | SENT | FAILED | UNCONFIRMED
+  /// PENDING | SENT | HANDOFF (the fixed "a person will answer" message was sent
+  /// instead of the model's answer) | FAILED | UNCONFIRMED
   status      String   @default("PENDING")
   error       String?
   createdAt   DateTime @default(now())
@@ -818,6 +829,8 @@ model SmsCampaign {
   /// QUEUED | SENDING | DONE | STOPPED
   status      String   @default("QUEUED")
   stopReason  String?
+  /// SHA-256 of the normalised text, to refuse the same message twice in 24 hours.
+  messageHash String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -825,6 +838,7 @@ model SmsCampaign {
   messages  SmsMessage[]
 
   @@index([workspaceId, createdAt])
+  @@index([workspaceId, messageHash, createdAt])
 }
 
 /// One recipient of a bulk send. Unique per phone, so a number on two

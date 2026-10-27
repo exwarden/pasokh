@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { useI18n } from "@/lib/i18n/provider";
 import type { StaticMessageKey } from "@/lib/i18n";
-import { ANTHROPIC_MODELS } from "@/lib/ai/llm";
+import { ANTHROPIC_MODELS } from "@/lib/ai/models";
 
 type Settings = {
   enabled: boolean;

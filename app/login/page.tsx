@@ -47,7 +47,9 @@ export default async function LoginPage({
   const errorMessage =
     params.code === "throttled"
       ? t("Too many failed attempts. Wait 15 minutes and try again.")
-      : params.error
+      : params.code === "unavailable"
+        ? t("Sign-in is unavailable right now because a server component is not responding. Try again in a minute; if it persists, tell the administrator.")
+        : params.error
         ? t("Wrong email or password.")
         : null;
 

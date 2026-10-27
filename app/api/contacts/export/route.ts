@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceContext } from "@/lib/workspace-access";
+import { getCurrentWorkspaceContext, managerOnly } from "@/lib/workspace-access";
 import { contactWhere } from "@/lib/contacts/list";
 import { toCsv } from "@/lib/forms/api";
 
@@ -10,6 +10,8 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = managerOnly(context);
+  if (denied) return denied;
   const s = request.nextUrl.searchParams;
   const rows = await prisma.contact.findMany({
     where: contactWhere({ workspaceId: context.workspaceId, accountId: s.get("accountId"), q: s.get("q"), tag: s.get("tag"), hasPhone: s.get("hasPhone") === "1" }),

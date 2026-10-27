@@ -10,7 +10,8 @@ const eventEnvelopeSchema = z.object({ account: z.object({ id: z.string().min(1)
 export async function POST(request: Request, segmentData: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = await segmentData.params;
   const connection = await prisma.zernioConnection.findUnique({ where: { workspaceId } });
-  if (!connection?.webhookId) return NextResponse.json({ error: 'Unknown subscription' }, { status: 404 });
+  // Same answer as a bad signature: whether a workspace id exists is not for strangers to learn.
+  if (!connection?.webhookId) return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   const rawBody = await request.text();
   if (!verifyZernioSignature({ rawBody, signature: request.headers.get('x-zernio-signature'), secret: decryptToken(connection.webhookSecret) })) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });

@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
+import { grantWorkspaceRole } from "@/lib/workspace-members";
 import {
   buildInvitationUrl,
   generateInvitationToken,
   getInvitationExpiry,
+  hashInvitationToken,
   normalizeInvitationEmail,
 } from "@/lib/workspace-invitations";
 import {
@@ -31,6 +33,10 @@ async function getMemberPayload(
   workspaceId: string,
   currentUserRole?: "OWNER" | "ADMIN" | "MEMBER"
 ) {
+  // Pending invitations are for whoever manages the workspace; a plain member
+  // has no use for them. The token itself is never returned: it is shown once,
+  // when the invitation is created, and only its hash is stored.
+  const canSeeInvitations = currentUserRole === "OWNER" || currentUserRole === "ADMIN";
   const [members, invitations] = await Promise.all([
     prisma.workspaceMember.findMany({
       where: { workspaceId },
@@ -48,27 +54,25 @@ async function getMemberPayload(
         },
       },
     }),
-    prisma.workspaceInvitation.findMany({
-      where: { workspaceId, status: "PENDING" },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        token: true,
-        expiresAt: true,
-        createdAt: true,
-      },
-    }),
+    canSeeInvitations
+      ? prisma.workspaceInvitation.findMany({
+          where: { workspaceId, status: "PENDING" },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            expiresAt: true,
+            createdAt: true,
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   return {
     ...(currentUserRole ? { currentUserRole } : {}),
     members,
-    invitations: invitations.map((invitation) => ({
-      ...invitation,
-      inviteUrl: buildInvitationUrl(invitation.token),
-    })),
+    invitations,
   };
 }
 
@@ -114,29 +118,17 @@ export async function POST(request: NextRequest) {
   }
 
   const email = normalizeInvitationEmail(parsed.data.email);
+  let inviteUrl: string | null = null;
   const existingUser = await prisma.user.findUnique({
     where: { email },
     select: { id: true },
   });
 
   if (existingUser) {
-    await prisma.workspaceMember.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: context.workspaceId,
-          userId: existingUser.id,
-        },
-      },
-      create: {
-        workspaceId: context.workspaceId,
-        userId: existingUser.id,
-        role: parsed.data.role,
-      },
-      update: {
-        role: parsed.data.role,
-      },
-    });
+    await grantWorkspaceRole(prisma, context.workspaceId, existingUser.id, parsed.data.role);
   } else {
+    const token = generateInvitationToken();
+    inviteUrl = buildInvitationUrl(token);
     await prisma.workspaceInvitation.upsert({
       where: {
         workspaceId_email: {
@@ -148,14 +140,14 @@ export async function POST(request: NextRequest) {
         workspaceId: context.workspaceId,
         email,
         role: parsed.data.role,
-        token: generateInvitationToken(),
+        tokenHash: hashInvitationToken(token),
         invitedByUserId: context.userId,
         expiresAt: getInvitationExpiry(),
       },
       update: {
         role: parsed.data.role,
         status: "PENDING",
-        token: generateInvitationToken(),
+        tokenHash: hashInvitationToken(token),
         invitedByUserId: context.userId,
         expiresAt: getInvitationExpiry(),
       },
@@ -164,7 +156,8 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     success: true,
-    data: await getMemberPayload(context.workspaceId, context.role),
+    // The link exists only in this response; it cannot be read back later.
+    data: { ...(await getMemberPayload(context.workspaceId, context.role)), ...(inviteUrl ? { newInvite: { email, inviteUrl } } : {}) },
   });
 }
 

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Pasokh installer for Linux and macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ArminShirzad/pasokh/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/exwarden/pasokh/main/install.sh | bash
+#   (this fork deploys with git clone + docker compose instead: docs/DEPLOYMENT.fa.md)
 #
 # Safe to run again: an existing installation keeps its .env (secrets and
 # settings) and is just updated and restarted.
 set -euo pipefail
 
-REPO_RAW="${PASOKH_REPO_RAW:-https://raw.githubusercontent.com/ArminShirzad/pasokh/main}"
+REPO_RAW="${PASOKH_REPO_RAW:-https://raw.githubusercontent.com/exwarden/pasokh/main}"
 LANG_CHOICE="${PASOKH_LANG:-}"
 
 # Reads answers from the terminal even when the script itself arrives on stdin.
@@ -136,6 +137,8 @@ NEXTAUTH_SECRET=$(secret 32)
 CRON_SECRET=$(secret 32)
 ENCRYPTION_KEY=$(secret 32)
 POSTGRES_PASSWORD=$(secret 16)
+SETUP_TOKEN=$(secret 16)
+PASOKH_IMAGE=${PASOKH_IMAGE:-}
 
 COMPOSE_PROFILES=$PROFILES
 PASOKH_TUNNEL=$TUNNEL
@@ -193,6 +196,7 @@ fi
 echo
 say "✅ پاسخ اجرا شد." "✅ Pasokh is running."
 say "   آدرس: ${URL:-http://localhost:$PORT}" "   Address: ${URL:-http://localhost:$PORT}"
+say "   توکن راه‌اندازی (SETUP_TOKEN) در $DIR/.env است؛ برای ساخت حساب مدیر لازم است." "   The setup token (SETUP_TOKEN) is in $DIR/.env; creating the owner account needs it."
 say "   این آدرس را باز کنید و حساب مدیر را بسازید. بعد در «تنظیمات» کلید API زرنیو را وارد کنید و اینستاگرام را وصل کنید." \
     "   Open it and create the owner account. Then, in Settings, paste a Zernio API key and connect Instagram."
 if grep -q '^PASOKH_TUNNEL=quick' .env; then

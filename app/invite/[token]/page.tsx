@@ -7,6 +7,7 @@ import InvitationAcceptCard from "@/components/invitation-accept-card";
 import { PASSWORD_PROVIDER_ID, auth, signIn } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { getI18n } from "@/lib/i18n/server";
+import { hashInvitationToken } from "@/lib/workspace-invitations";
 import { AccountError, accountErrorFromQuery, createInvitedUser } from "@/lib/users/accounts";
 
 type InvitePageProps = {
@@ -30,7 +31,7 @@ export default async function InvitePage({ params, searchParams }: InvitePagePro
   const [session, invitation] = await Promise.all([
     auth(),
     prisma.workspaceInvitation.findUnique({
-      where: { token },
+      where: { tokenHash: hashInvitationToken(token) },
       include: { workspace: { select: { name: true } } },
     }),
   ]);

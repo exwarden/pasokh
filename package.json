@@ -12,6 +12,7 @@
     "db:migrate": "prisma migrate deploy",
     "worker": "tsx worker/dm-worker.ts",
     "user:password": "tsx scripts/user-password.ts",
+    "keys:rotate": "tsx scripts/rotate-encryption-key.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
