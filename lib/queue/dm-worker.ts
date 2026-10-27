@@ -26,6 +26,7 @@ import {
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import { isOwnComment } from "@/lib/instagram/own-comment";
+import { commentDmCooldownMs, findRecentDmToCommenter } from "@/lib/automation/comment-cooldown";
 import {
   MetaApiError,
   RateLimitError,
@@ -594,6 +595,30 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "SKIPPED_DEDUP",
           matchedKeyword: matchResult.matchedKeyword,
           errorMessage: `Another campaign (${privateReplyUsedBy.automation?.name ?? "unknown"}) already sent the one private reply Instagram allows for this comment`,
+        },
+      });
+      continue;
+    }
+
+    // One person commenting the keyword several times gets one DM per campaign
+    // per cooldown window, not one per comment. The public reply above is
+    // per comment and unaffected.
+    const cooldownMs = commentDmCooldownMs();
+    const recentDm = await findRecentDmToCommenter({
+      automationId: automation.id,
+      commenterId,
+      commentId,
+      cooldownMs,
+    });
+    if (recentDm) {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SKIPPED_DEDUP",
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage: `This person already received a DM from this campaign inside the ${Math.round(cooldownMs / 3_600_000 * 10) / 10} h cooldown`,
         },
       });
       continue;
