@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// Names resolve to a public address, so no test needs the network.
-vi.mock("node:dns/promises", () => ({ lookup: async () => [{ address: "93.184.216.34", family: 4 }] }));
+// The request goes through postJson (lib/net/safe-fetch.ts, tested on its own); here it is a stand-in.
+const sent = vi.hoisted(() => ({ reply: null as null | { status: number; body: unknown }, calls: [] as { url: string; headers: Record<string, string>; body: Record<string, unknown> }[] }));
+vi.mock("@/lib/net/safe-fetch", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  postJson: async (url: string, headers: Record<string, string>, body: Record<string, unknown>) => {
+    sent.calls.push({ url, headers, body });
+    return { status: sent.reply!.status, headers: {}, text: JSON.stringify(sent.reply!.body) };
+  },
+}));
 import { complete, LlmError, LlmRateLimitError } from "../lib/ai/llm";
 import { cleanAnswer, systemPrompt } from "../lib/ai/prompt";
 
-const calls: { url: string; headers: Record<string, string>; body: Record<string, unknown> }[] = [];
+const calls = sent.calls;
 function respond(status: number, body: unknown) {
-  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) });
-    return new Response(JSON.stringify(body), { status });
-  });
+  sent.reply = { status, body };
 }
 
 afterEach(() => {

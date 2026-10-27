@@ -4,7 +4,8 @@
  * so no SDK has to keep up with either.
  */
 
-import { assertPublicHttpsUrl } from "@/lib/net/safe-url";
+import { postJson, ResponseTooLargeError, type PostResult } from "@/lib/net/safe-fetch";
+import { UnsafeUrlError } from "@/lib/net/safe-url";
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 export type LlmConfig = { provider: "ANTHROPIC" | "OPENAI"; model: string; apiKey: string; baseUrl?: string | null };
@@ -30,31 +31,22 @@ async function post(url: string, headers: Record<string, string>, body: unknown)
   // The address of an OpenAI-compatible gateway is typed in by an admin, and
   // the server sends the API key to it: it must be a public https host, never
   // something inside the deployment (Redis, Postgres, the cloud metadata API).
+  // postJson checks the address the socket actually connects to, follows no
+  // redirect and reads a bounded answer.
+  let response: PostResult;
   try {
-    await assertPublicHttpsUrl(url);
+    response = await postJson(url, { "Content-Type": "application/json", ...headers }, body, { timeoutMs: TIMEOUT_MS });
   } catch (error) {
-    throw new LlmError(error instanceof Error ? error.message : "The AI address is not allowed.");
-  }
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(body),
-      // A redirect could lead somewhere the check above never saw.
-      redirect: "manual",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-  } catch (error) {
+    if (error instanceof UnsafeUrlError || error instanceof ResponseTooLargeError) throw new LlmError(error.message);
     // Nothing came back, so nothing was produced: worth another try.
     throw new LlmRateLimitError(`AI request did not complete: ${error instanceof Error ? error.message : error}`);
   }
   if (response.status >= 300 && response.status < 400) throw new LlmError(`AI provider redirected (HTTP ${response.status}); use its final address`);
-  const text = await response.text();
+  const text = response.text;
   if (response.status === 429 || response.status === 529 || response.status >= 500) {
     throw new LlmRateLimitError(`AI provider busy (HTTP ${response.status})`);
   }
-  if (!response.ok) {
+  if (response.status < 200 || response.status >= 300) {
     // The error body may echo the request; keep only a short, keyless excerpt.
     let detail = "";
     try {

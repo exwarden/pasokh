@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dns = vi.hoisted(() => ({ addresses: [{ address: "93.184.216.34", family: 4 }] as { address: string; family: number }[] }));
 vi.mock("node:dns/promises", () => ({ lookup: async () => dns.addresses }));
 
-import { assertPublicHttpsUrl, checkPublicHttpsUrl, isPrivateAddress } from "../lib/net/safe-url";
+const postJson = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/net/safe-fetch", async (importOriginal) => ({ ...(await importOriginal<object>()), postJson }));
+
+import { assertPublicHttpsUrl, checkPublicHttpsUrl, isPrivateAddress, UnsafeUrlError } from "../lib/net/safe-url";
+import { ResponseTooLargeError } from "../lib/net/safe-fetch";
 import { complete, LlmError } from "../lib/ai/llm";
 import { assistantInputSchema } from "../lib/ai/settings";
 
@@ -16,11 +20,14 @@ describe("addresses a user-supplied URL may not reach", () => {
   it.each([
     "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
     "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1", "::ffff:7f00:1", "224.0.0.1",
+    // NAT64, IPv4-compatible, 6to4, Teredo, discard, site-local
+    "64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b::a9fe:a9fe", "64:ff9b:1::1", "::7f00:1", "::10.0.0.1", "2002::1", "2002:7f00:1::1",
+    "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "100::1", "fec0::1", "2001:db8::1",
   ])("%s is private", (ip) => {
     expect(isPrivateAddress(ip)).toBe(true);
   });
 
-  it.each(["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111"])("%s is public", (ip) => {
+  it.each(["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "64:ff9b::5db8:d822", "2001:4860:4860::8888"])("%s is public", (ip) => {
     expect(isPrivateAddress(ip)).toBe(false);
   });
 
@@ -64,18 +71,22 @@ describe("the AI gateway address", () => {
     expect(assistantInputSchema.safeParse(input("https://gateway.example.ir/v1")).success).toBe(true);
   });
 
-  it("is rechecked on every call: a name that now resolves inward sends nothing, and the key never leaves", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    dns.addresses = [{ address: "10.0.0.5", family: 4 }];
+  it("turns a refusal to connect to a private address into an LlmError, and the key goes nowhere", async () => {
+    postJson.mockRejectedValue(new UnsafeUrlError("The address points at a private network."));
     await expect(
       complete({ provider: "OPENAI", model: "m", apiKey: "secret-key", baseUrl: "https://rebound.example.com/v1" }, "S", [{ role: "user", content: "x" }]),
     ).rejects.toBeInstanceOf(LlmError);
-    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("turns an oversized answer into an LlmError that is not retried", async () => {
+    postJson.mockRejectedValue(new ResponseTooLargeError("The answer is larger than 1048576 bytes."));
+    await expect(
+      complete({ provider: "OPENAI", model: "m", apiKey: "k", baseUrl: "https://gateway.example.ir/v1" }, "S", [{ role: "user", content: "x" }]),
+    ).rejects.toBeInstanceOf(LlmError);
   });
 
   it("does not follow a redirect to somewhere unchecked", async () => {
-    vi.stubGlobal("fetch", async () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/" } }));
+    postJson.mockResolvedValue({ status: 302, headers: { location: "http://169.254.169.254/" }, text: "" });
     await expect(
       complete({ provider: "OPENAI", model: "m", apiKey: "k", baseUrl: "https://gateway.example.ir/v1" }, "S", [{ role: "user", content: "x" }]),
     ).rejects.toThrow("redirected");
