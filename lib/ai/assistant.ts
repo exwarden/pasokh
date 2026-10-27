@@ -83,6 +83,16 @@ export async function answerWithAi({
   let reply = await prisma.aiReply.findUnique({
     where: { assistantId_triggerId: { assistantId: assistant.id, triggerId: messageId } },
   });
+  if (reply?.status === "SENDING") {
+    // The process stopped after handing the answer to Instagram and before it
+    // recorded the outcome. The message may have been delivered: never send again.
+    const error = "The process stopped while the reply was being sent; it may have been delivered and is not sent again";
+    const moved = await prisma.aiReply.updateMany({ where: { id: reply.id, status: "SENDING" }, data: { status: "UNCONFIRMED", error } });
+    if (moved.count === 1) {
+      await recordAiEvent(workspaceId, "WARNING", "The AI assistant could not confirm a reply", { assistantId: assistant.id, igsid, reason: error });
+    }
+    return "UNCONFIRMED";
+  }
   if (reply && !(reply.status === "PENDING" && reply.answer)) return "DUPLICATE";
 
   if (!reply) {
@@ -195,6 +205,11 @@ export async function answerWithAi({
 
   try {
     const context = await createInstagramContext(assistant.instagramAccount, `ai:${claimed.id}`);
+    // Atomic hand-over to Instagram. A retry that finds SENDING knows the process
+    // died somewhere inside the send and must not send again; one that loses this
+    // race (a second job on the same reply) stops here.
+    const moved = await prisma.aiReply.updateMany({ where: { id: claimed.id, status: "PENDING" }, data: { status: "SENDING" } });
+    if (moved.count !== 1) return "DUPLICATE";
     await sendOutboundMessage({
       context,
       instagramAccountId: assistant.instagramAccount.instagramId,
@@ -205,7 +220,11 @@ export async function answerWithAi({
     // Instagram asked us to wait: the answer stays stored (PENDING) and the
     // retry sends it as written.
     if (raw instanceof RateLimitError) {
-      if (!finalAttempt) throw raw;
+      if (!finalAttempt) {
+        // Nothing was sent: put it back so the retry sends the stored answer.
+        await prisma.aiReply.updateMany({ where: { id: claimed.id, status: "SENDING" }, data: { status: "PENDING" } });
+        throw raw;
+      }
       // No retry is left: say so rather than leave the reply waiting for ever.
       await prisma.aiReply.update({ where: { id: claimed.id }, data: { status: "FAILED", error: "Instagram asked us to wait and no retry was left" } });
       await recordAiEvent(workspaceId, "ERROR", "The AI assistant could not reach a customer", { assistantId: assistant.id, igsid, reason: "rate limited on the last attempt" });

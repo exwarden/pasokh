@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
   prisma: {
     aiAssistant: { findFirst: vi.fn() },
-    aiReply: { findUnique: vi.fn(), count: vi.fn(), create: vi.fn(), findMany: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    aiReply: { findUnique: vi.fn(), count: vi.fn(), create: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn(), delete: vi.fn() },
     contact: { findFirst: vi.fn() },
     operationalEvent: { findFirst: vi.fn(), create: vi.fn() },
   },
@@ -39,6 +39,7 @@ beforeEach(() => {
   m.prisma.aiReply.create.mockResolvedValue({ id: "r1", answer: null, error: null });
   m.prisma.aiReply.findMany.mockResolvedValue([]);
   m.prisma.aiReply.update.mockResolvedValue({});
+  m.prisma.aiReply.updateMany.mockResolvedValue({ count: 1 });
   m.prisma.contact.findFirst.mockResolvedValue({ lastInboundAt: new Date() });
 });
 
