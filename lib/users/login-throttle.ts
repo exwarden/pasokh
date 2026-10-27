@@ -22,7 +22,8 @@ const DEADLINE_MS = 300;
 //   - per address: one place spraying many accounts.
 // Without a trusted address (TRUSTED_PROXY unset) the first two collapse into
 // one email counter with the low limit, as before.
-// Success clears the email's counters.
+// Every attempt is counted before the password is checked; success clears the
+// email's counters and gives the address its slot back.
 const WINDOW_SECONDS = 15 * 60;
 const MAX_FAILURES_PER_EMAIL_AND_IP = 5;
 const MAX_FAILURES_PER_EMAIL = 50;
@@ -37,51 +38,50 @@ function keys(email: string, ip: string | null) {
   };
 }
 
-export async function isLoginThrottled(email: string, ip: string | null): Promise<boolean> {
+/**
+ * Counts this attempt and says whether it may go on to the password check.
+ * The increment happens first and is atomic, so a burst of parallel guesses
+ * each get their own number and only the first few are let through; counting
+ * after the check would let them all read the same low count. Throws
+ * ThrottleUnavailableError when the counters cannot be written in time.
+ */
+export async function reserveLoginAttempt(email: string, ip: string | null): Promise<boolean> {
   const k = keys(email, ip);
-  let counts: [string | null, string | null, string | null];
+  const names = [k.email, k.pair, k.ip].filter((n): n is string => n !== null);
+  let replies: Array<[Error | null, unknown]> | null;
   try {
-    const redis = getRedisConnection();
-    const read = Promise.all([
-      redis.get(k.email),
-      k.pair ? redis.get(k.pair) : Promise.resolve(null),
-      k.ip ? redis.get(k.ip) : Promise.resolve(null),
-    ]);
-    const result = await withTimeout(read, DEADLINE_MS, null);
-    if (!result) throw new ThrottleUnavailableError("Redis did not answer in time");
-    counts = result;
+    const multi = getRedisConnection().multi();
+    for (const name of names) multi.incr(name).expire(name, WINDOW_SECONDS, "NX");
+    replies = (await withTimeout(multi.exec(), DEADLINE_MS, null)) as Array<[Error | null, unknown]> | null;
   } catch (error) {
-    throw error instanceof ThrottleUnavailableError ? error : new ThrottleUnavailableError(error instanceof Error ? error.message : "Redis error");
+    throw new ThrottleUnavailableError(error instanceof Error ? error.message : "Redis error");
   }
-  const [byEmail, byPair, byIp] = counts;
+  if (!replies) throw new ThrottleUnavailableError("Redis did not answer in time");
+  // Replies alternate INCR, EXPIRE for each key, in the order of `names`.
+  const count = (name: string) => {
+    const reply = replies![names.indexOf(name) * 2];
+    if (!reply || reply[0]) throw new ThrottleUnavailableError("Redis refused the counter");
+    return Number(reply[1]);
+  };
   const emailLimit = ip ? MAX_FAILURES_PER_EMAIL : MAX_FAILURES_PER_EMAIL_AND_IP;
   return (
-    Number(byEmail ?? 0) >= emailLimit ||
-    Number(byPair ?? 0) >= MAX_FAILURES_PER_EMAIL_AND_IP ||
-    Number(byIp ?? 0) >= MAX_FAILURES_PER_IP
+    count(k.email) > emailLimit ||
+    (k.pair !== null && count(k.pair) > MAX_FAILURES_PER_EMAIL_AND_IP) ||
+    (k.ip !== null && count(k.ip) > MAX_FAILURES_PER_IP)
   );
-}
-
-export async function recordLoginFailure(email: string, ip: string | null): Promise<void> {
-  // The attempt is already refused; a counter that cannot be written must not
-  // turn that refusal into a hang.
-  try {
-    const redis = getRedisConnection();
-    const k = keys(email, ip);
-    const multi = redis.multi().incr(k.email).expire(k.email, WINDOW_SECONDS, "NX");
-    if (k.pair) multi.incr(k.pair).expire(k.pair, WINDOW_SECONDS, "NX");
-    if (k.ip) multi.incr(k.ip).expire(k.ip, WINDOW_SECONDS, "NX");
-    await withTimeout(multi.exec(), DEADLINE_MS, null);
-  } catch {
-    // see above
-  }
 }
 
 export async function clearLoginFailures(email: string, ip: string | null = null): Promise<void> {
   try {
     const redis = getRedisConnection();
     const k = keys(email, ip);
-    await withTimeout(Promise.all([redis.del(k.email), k.pair ? redis.del(k.pair) : Promise.resolve(0)]), DEADLINE_MS, null);
+    // The attempt was counted up front; a right password is not a failure, so
+    // the address gets its slot back as well.
+    const release = async () => {
+      if (!k.ip) return;
+      if ((await redis.decr(k.ip)) < 0) await redis.del(k.ip);
+    };
+    await withTimeout(Promise.all([redis.del(k.email), k.pair ? redis.del(k.pair) : Promise.resolve(0), release()]), DEADLINE_MS, null);
   } catch {
     // The password was right; failing to reset a counter must not block the sign-in.
   }

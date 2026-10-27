@@ -3,18 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const redis = vi.hoisted(() => {
   const store = new Map<string, number>();
   const multi = () => {
-    const ops: Array<() => void> = [];
+    const ops: Array<() => unknown> = [];
     const chain = {
       incr(key: string) {
-        ops.push(() => store.set(key, (store.get(key) ?? 0) + 1));
+        ops.push(() => store.set(key, (store.get(key) ?? 0) + 1).get(key));
         return chain;
       },
       expire() {
+        ops.push(() => 1);
         return chain;
       },
       async exec() {
-        ops.forEach((op) => op());
-        return [];
+        return ops.map((op) => [null, op()]);
       },
     };
     return chain;
@@ -24,6 +24,7 @@ const redis = vi.hoisted(() => {
     client: {
       get: async (key: string) => (store.has(key) ? String(store.get(key)) : null),
       del: async (key: string) => store.delete(key),
+      decr: async (key: string) => store.set(key, (store.get(key) ?? 0) - 1).get(key),
       multi,
     },
   };
@@ -156,26 +157,26 @@ describe("when Redis does not answer", { timeout: 30_000 }, () => {
   });
 
   it("refuses sign-in quickly with its own reason, even with the right password, instead of hanging or letting guesses through", async () => {
-    const original = redis.client.get;
-    redis.client.get = () => new Promise(() => {});
+    const original = redis.client.multi;
+    redis.client.multi = () => ({ incr() { return this; }, expire() { return this; }, exec: () => new Promise(() => {}) }) as never;
     try {
       const started = Date.now();
       expect(await checkCredentials("owner@shop.ir", "good password", "1.2.3.4")).toEqual({ ok: false, reason: "unavailable" });
       expect(Date.now() - started).toBeLessThan(3000);
     } finally {
-      redis.client.get = original;
+      redis.client.multi = original;
     }
   });
 
   it("does the same when Redis errors", async () => {
-    const original = redis.client.get;
-    redis.client.get = async () => {
+    const original = redis.client.multi;
+    redis.client.multi = () => {
       throw new Error("ECONNREFUSED");
     };
     try {
       expect(await checkCredentials("owner@shop.ir", "good password", null)).toEqual({ ok: false, reason: "unavailable" });
     } finally {
-      redis.client.get = original;
+      redis.client.multi = original;
     }
   });
 

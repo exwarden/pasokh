@@ -5,7 +5,7 @@ import { PASSWORD_PROVIDER_ID, signIn } from "@/lib/auth";
 import { getI18n } from "@/lib/i18n/server";
 import { AccountError, accountErrorFromQuery, createFirstOwner, needsFirstRunSetup } from "@/lib/users/accounts";
 import { isSetupEnabled } from "@/lib/users/setup-token";
-import { clearLoginFailures, isLoginThrottled, recordLoginFailure } from "@/lib/users/login-throttle";
+import { clearLoginFailures, reserveLoginAttempt } from "@/lib/users/login-throttle";
 
 // One shared counter for every visitor: a setup token is long and random, so a
 // handful of wrong guesses per window is plenty for the operator and useless
@@ -40,7 +40,7 @@ export default async function SetupPage({
     const field = (name: string) => String(formData.get(name) ?? "");
     let throttled: boolean;
     try {
-      throttled = await isLoginThrottled(SETUP_THROTTLE_KEY, null);
+      throttled = await reserveLoginAttempt(SETUP_THROTTLE_KEY, null);
     } catch {
       redirect(`/setup?error=${encodeURIComponent("Setup is unavailable right now. Try again in a minute.")}`);
     }
@@ -58,7 +58,6 @@ export default async function SetupPage({
       });
     } catch (e) {
       if (e instanceof AccountError) {
-        if (e.message === "The setup token is wrong.") await recordLoginFailure(SETUP_THROTTLE_KEY, null);
         redirect(`/setup?error=${encodeURIComponent(e.message)}`);
       }
       throw e;

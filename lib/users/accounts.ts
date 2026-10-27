@@ -3,7 +3,7 @@ import { ensureWorkspaceForUser } from "@/lib/workspace";
 import { hashInvitationToken } from "@/lib/workspace-invitations";
 import { setupTokenMatches } from "./setup-token";
 import { hashPassword, passwordProblem, verifyPassword } from "./password";
-import { ThrottleUnavailableError, clearLoginFailures, isLoginThrottled, recordLoginFailure } from "./login-throttle";
+import { ThrottleUnavailableError, clearLoginFailures, reserveLoginAttempt } from "./login-throttle";
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -130,7 +130,7 @@ export type CredentialCheck =
 export async function checkCredentials(rawEmail: string, password: string, ip: string | null): Promise<CredentialCheck> {
   const email = normalizeEmail(rawEmail);
   try {
-    if (await isLoginThrottled(email, ip)) return { ok: false, reason: "throttled" };
+    if (await reserveLoginAttempt(email, ip)) return { ok: false, reason: "throttled" };
   } catch (error) {
     if (error instanceof ThrottleUnavailableError) return { ok: false, reason: "unavailable" };
     throw error;
@@ -143,7 +143,6 @@ export async function checkCredentials(rawEmail: string, password: string, ip: s
   // which addresses have accounts.
   const valid = await verifyPassword(password, user?.passwordHash ?? DUMMY_HASH);
   if (!user || !user.passwordHash || !valid) {
-    await recordLoginFailure(email, ip);
     return { ok: false, reason: "invalid" };
   }
   await clearLoginFailures(email, ip);
